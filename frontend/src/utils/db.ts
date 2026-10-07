@@ -10,10 +10,13 @@ import type { Reef } from '@/types/reef'
 import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
 import type { CoralRecord } from '@/types/coralRecord'
+import { LEGACY_CORAL_SOURCE } from '@/types/coralRecord'
 import type { FishCount } from '@/types/fishCount'
+import type { NurseryBatch } from '@/types/nursery'
+import type { OutplantRecord } from '@/types/outplant'
 
 /** 当前数据结构版本号：每次调整字段结构必须 +1 并补迁移 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** 数据库名（浏览器 IndexedDB 中的库名） */
 export const DB_NAME = 'gbcoralbelt'
@@ -35,6 +38,8 @@ export interface BackupPayload {
   belts: Belt[]
   corals: CoralRecord[]
   fishes: FishCount[]
+  nurseries: NurseryBatch[]
+  outplants: OutplantRecord[]
 }
 
 export class CoralBeltDatabase extends Dexie {
@@ -43,6 +48,8 @@ export class CoralBeltDatabase extends Dexie {
   belts!: Table<Belt, string>
   corals!: Table<CoralRecord, string>
   fishes!: Table<FishCount, string>
+  nurseries!: Table<NurseryBatch, string>
+  outplants!: Table<OutplantRecord, string>
 
   constructor() {
     super(DB_NAME)
@@ -57,7 +64,7 @@ export class CoralBeltDatabase extends Dexie {
     })
 
     // v2：补齐筛选与统计需要的索引（位置/面积、经纬度/水深、样带长度与朝向、白化等级、类别）
-    this.version(DB_VERSION)
+    this.version(2)
       .stores({
         reefs: 'id, name, location, protectStatus, areaKm2, manager, updatedAt',
         sites: 'id, reefId, no, lat, lng, depthM, substrate, updatedAt',
@@ -85,6 +92,30 @@ export class CoralBeltDatabase extends Dexie {
               Object.assign(row, factory())
             })
         }
+      })
+
+    // v3：苗圃回播——新增苗圃批次表与回播对账表；
+    // 珊瑚记录补 source/nurseryNo/batchNo（旧数据没记来源，统一标成自然珊瑚）。
+    this.version(DB_VERSION)
+      .stores({
+        reefs: 'id, name, location, protectStatus, areaKm2, manager, updatedAt',
+        sites: 'id, reefId, no, lat, lng, depthM, substrate, updatedAt',
+        belts: 'id, siteId, no, lengthM, orientation, surveyDate, observer, updatedAt',
+        corals: 'id, beltId, genus, form, coverCm, bleachLevel, source, nurseryNo, batchNo, updatedAt',
+        fishes: 'id, beltId, family, count, sizeClass, category, updatedAt',
+        nurseries: 'id, nurseryNo, batchNo, species, form, availableCm, updatedAt',
+        outplants: 'id, beltId, beltNo, nurseryNo, batchNo, status, coverCm, deductedCm, updatedAt'
+      })
+      .upgrade(async (tx) => {
+        // 迁移：历史珊瑚记录没记来源，升级时一律标成自然珊瑚（白化指数口径不变）
+        await tx
+          .table('corals')
+          .toCollection()
+          .modify((row: Record<string, unknown>) => {
+            if (typeof row.source !== 'string') row.source = LEGACY_CORAL_SOURCE
+            if (typeof row.nurseryNo !== 'string') row.nurseryNo = ''
+            if (typeof row.batchNo !== 'string') row.batchNo = ''
+          })
       })
   }
 }
@@ -121,6 +152,10 @@ interface SeedCoral {
   coverCm: number
   bleachLevel: CoralRecord['bleachLevel']
   remark: string
+  /** 播种默认自然珊瑚；回播行显式给出来源与批号 */
+  source?: CoralRecord['source']
+  nurseryNo?: string
+  batchNo?: string
 }
 
 interface SeedFish {
@@ -142,6 +177,35 @@ interface SeedBelt {
   observer: string
   corals: SeedCoral[]
   fishes: SeedFish[]
+}
+
+/** 苗圃批次播种行：可供移出量为「初始量 − 已成功回播扣减」后的净值 */
+interface SeedNursery {
+  id: string
+  nurseryNo: string
+  batchNo: string
+  species: string
+  form: NurseryBatch['form']
+  availableCm: number
+  keeper: string
+  startedAt: string
+  remark: string
+}
+
+/** 回播对账播种行：覆盖已扣减与各类挂起场景 */
+interface SeedOutplant {
+  id: string
+  beltId: string
+  beltNo: string
+  nurseryNo: string
+  batchNo: string
+  coverCm: number
+  status: OutplantRecord['status']
+  issue: string
+  coralId: string
+  surveyDate: string
+  observer: string
+  deductedCm: number
 }
 
 /**
@@ -231,7 +295,9 @@ export async function seedDemoData(): Promise<void> {
         { id: 'cor_ql01a_1', beltId: 'belt_ql01_a', genus: '鹿角珊瑚属', form: '枝状', coverCm: 860, bleachLevel: '无', remark: '长势良好' },
         { id: 'cor_ql01a_2', beltId: 'belt_ql01_a', genus: '杯形珊瑚属', form: '枝状', coverCm: 540, bleachLevel: '轻', remark: '局部褪色' },
         { id: 'cor_ql01a_3', beltId: 'belt_ql01_a', genus: '滨珊瑚属', form: '块状', coverCm: 1120, bleachLevel: '无', remark: '' },
-        { id: 'cor_ql01a_4', beltId: 'belt_ql01_a', genus: '软珊瑚属', form: '软珊瑚', coverCm: 380, bleachLevel: '轻', remark: '' }
+        { id: 'cor_ql01a_4', beltId: 'belt_ql01_a', genus: '软珊瑚属', form: '软珊瑚', coverCm: 380, bleachLevel: '轻', remark: '' },
+        // 回播珊瑚：带批号进覆盖率，但不参与白化指数（白化等级仅登记，不计数）
+        { id: 'cor_ql01a_5', beltId: 'belt_ql01_a', genus: '鹿角珊瑚属', form: '枝状', coverCm: 600, bleachLevel: '无', remark: 'N-01 苗圃回播断枝', source: '回播珊瑚', nurseryNo: 'N-01', batchNo: 'B2026-03' }
       ],
       fishes: [
         { id: 'fsh_ql01a_1', beltId: 'belt_ql01_a', family: '雀鲷科', count: 46, sizeClass: '0-10cm', category: '鱼类' },
@@ -251,7 +317,9 @@ export async function seedDemoData(): Promise<void> {
       corals: [
         { id: 'cor_ql01b_1', beltId: 'belt_ql01_b', genus: '蔷薇珊瑚属', form: '叶状', coverCm: 720, bleachLevel: '中', remark: '边缘白化明显' },
         { id: 'cor_ql01b_2', beltId: 'belt_ql01_b', genus: '蜂巢珊瑚属', form: '块状', coverCm: 980, bleachLevel: '轻', remark: '' },
-        { id: 'cor_ql01b_3', beltId: 'belt_ql01_b', genus: '鹿角珊瑚属', form: '枝状', coverCm: 430, bleachLevel: '重', remark: '大面积白化，部分死亡' }
+        { id: 'cor_ql01b_3', beltId: 'belt_ql01_b', genus: '鹿角珊瑚属', form: '枝状', coverCm: 430, bleachLevel: '重', remark: '大面积白化，部分死亡' },
+        // 挂起场景①：批号在苗圃台账中查不到，珊瑚已照常入库并带批号（仍进覆盖率），扣减挂起等核定
+        { id: 'cor_ql01b_4', beltId: 'belt_ql01_b', genus: '杯形珊瑚属', form: '枝状', coverCm: 350, bleachLevel: '无', remark: '回播批号待苗圃组核定', source: '回播珊瑚', nurseryNo: 'N-02', batchNo: 'B2099-XX' }
       ],
       fishes: [
         { id: 'fsh_ql01b_1', beltId: 'belt_ql01_b', family: '隆头鱼科', count: 22, sizeClass: '11-20cm', category: '鱼类' },
@@ -305,7 +373,11 @@ export async function seedDemoData(): Promise<void> {
       observer: '陈立群',
       corals: [
         { id: 'cor_dz01a_1', beltId: 'belt_dz01_a', genus: '杯形珊瑚属', form: '枝状', coverCm: 520, bleachLevel: '重', remark: '受台风扰动后白化' },
-        { id: 'cor_dz01a_2', beltId: 'belt_dz01_a', genus: '蜂巢珊瑚属', form: '块状', coverCm: 310, bleachLevel: '中', remark: '' }
+        { id: 'cor_dz01a_2', beltId: 'belt_dz01_a', genus: '蜂巢珊瑚属', form: '块状', coverCm: 310, bleachLevel: '中', remark: '' },
+        // 挂起场景②：回播量超过批次可供移出量，外业珊瑚照常入库带批号（进覆盖率），扣减挂起
+        { id: 'cor_dz01a_3', beltId: 'belt_dz01_a', genus: '滨珊瑚属', form: '块状', coverCm: 900, bleachLevel: '无', remark: 'N-02 回播，存量不足待核定', source: '回播珊瑚', nurseryNo: 'N-02', batchNo: 'B2026-05' },
+        // 带了来源却没批号：不进覆盖率，也不参与扣减
+        { id: 'cor_dz01a_4', beltId: 'belt_dz01_a', genus: '鹿角珊瑚属', form: '枝状', coverCm: 200, bleachLevel: '无', remark: '回播断枝批号漏登', source: '回播珊瑚', nurseryNo: 'N-01', batchNo: '' }
       ],
       fishes: [
         { id: 'fsh_dz01a_1', beltId: 'belt_dz01_a', family: '雀鲷科', count: 34, sizeClass: '0-10cm', category: '鱼类' },
@@ -314,33 +386,139 @@ export async function seedDemoData(): Promise<void> {
     }
   ]
 
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    const stamp = (offset: number): { createdAt: number; updatedAt: number } => ({
-      createdAt: now + offset,
-      updatedAt: now + offset
-    })
+  /**
+   * 苗圃批次：可供移出量为扣除演示中已成功回播（600 cm）后的净值。
+   * N-02/B2026-05 仅留 400 cm，用于演示「可供移出量不足」挂起。
+   */
+  const nurseries: Array<Omit<NurseryBatch, 'createdAt' | 'updatedAt'>> = [
+    {
+      id: 'nur_n01_b03',
+      nurseryNo: 'N-01',
+      batchNo: 'B2026-03',
+      species: '鹿角珊瑚属',
+      form: '枝状',
+      availableCm: 2400,
+      keeper: '何沐',
+      startedAt: today,
+      remark: '清澜湾修复专用，断枝培育 6 个月'
+    },
+    {
+      id: 'nur_n01_b04',
+      nurseryNo: 'N-01',
+      batchNo: 'B2026-04',
+      species: '滨珊瑚属',
+      form: '块状',
+      availableCm: 3200,
+      keeper: '何沐',
+      startedAt: today,
+      remark: '块状珊瑚耐浊，供大洲岛礁区'
+    },
+    {
+      id: 'nur_n02_b05',
+      nurseryNo: 'N-02',
+      batchNo: 'B2026-05',
+      species: '滨珊瑚属',
+      form: '块状',
+      availableCm: 400,
+      keeper: '苏晚',
+      startedAt: today,
+      remark: '存量偏紧，回播需先核定'
+    }
+  ]
 
-    await db.reefs.bulkPut(reefs.map((reef, index) => ({ ...reef, ...stamp(index) })))
-    await db.sites.bulkPut(sites.map((site, index) => ({ ...site, ...stamp(100 + index) })))
-    await db.belts.bulkPut(
-      belts.map((belt, index) => {
-        const { corals, fishes, ...rest } = belt
-        void corals
-        void fishes
-        return { ...rest, ...stamp(200 + index) }
+  /**
+   * 回播对账：1 条已扣减 + 2 条挂起（批号对不上 / 存量不足），
+   * 另有 1 条缺批号的外业珊瑚不生成对账（不进覆盖率）。
+   */
+  const outplants: Array<Omit<OutplantRecord, 'createdAt' | 'updatedAt' | 'lastRetryAt'>> = [
+    {
+      id: 'out_ql01a_5',
+      beltId: 'belt_ql01_a',
+      beltNo: 'T-01',
+      nurseryNo: 'N-01',
+      batchNo: 'B2026-03',
+      coverCm: 600,
+      status: '已扣减',
+      issue: '',
+      coralId: 'cor_ql01a_5',
+      surveyDate: today,
+      observer: '林之遥',
+      deductedCm: 600
+    },
+    {
+      id: 'out_ql01b_4',
+      beltId: 'belt_ql01_b',
+      beltNo: 'T-02',
+      nurseryNo: 'N-02',
+      batchNo: 'B2099-XX',
+      coverCm: 350,
+      status: '挂起',
+      issue: '苗圃编号与批号对不上',
+      coralId: 'cor_ql01b_4',
+      surveyDate: today,
+      observer: '林之遥',
+      deductedCm: 0
+    },
+    {
+      id: 'out_dz01a_3',
+      beltId: 'belt_dz01_a',
+      beltNo: 'T-01',
+      nurseryNo: 'N-02',
+      batchNo: 'B2026-05',
+      coverCm: 900,
+      status: '挂起',
+      issue: '可供移出量不足',
+      coralId: 'cor_dz01a_3',
+      surveyDate: today,
+      observer: '陈立群',
+      deductedCm: 0
+    }
+  ]
+
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.nurseries, db.outplants],
+    async () => {
+      const stamp = (offset: number): { createdAt: number; updatedAt: number } => ({
+        createdAt: now + offset,
+        updatedAt: now + offset
       })
-    )
-    await db.corals.bulkPut(
-      belts.flatMap((belt, beltIndex) =>
-        belt.corals.map((coral, coralIndex) => ({ ...coral, ...stamp(300 + beltIndex * 100 + coralIndex) }))
+
+      await db.reefs.bulkPut(reefs.map((reef, index) => ({ ...reef, ...stamp(index) })))
+      await db.sites.bulkPut(sites.map((site, index) => ({ ...site, ...stamp(100 + index) })))
+      await db.belts.bulkPut(
+        belts.map((belt, index) => {
+          const { corals: _corals, fishes: _fishes, ...rest } = belt
+          void _corals
+          void _fishes
+          return { ...rest, ...stamp(200 + index) }
+        })
       )
-    )
-    await db.fishes.bulkPut(
-      belts.flatMap((belt, beltIndex) =>
-        belt.fishes.map((fish, fishIndex) => ({ ...fish, ...stamp(400 + beltIndex * 100 + fishIndex) }))
+      await db.corals.bulkPut(
+        belts.flatMap((belt, beltIndex) =>
+          belt.corals.map((coral, coralIndex) => ({
+            // 旧数据没记来源——播种的自然行同样显式标成自然珊瑚
+            source: '自然珊瑚' as const,
+            nurseryNo: '',
+            batchNo: '',
+            ...coral,
+            ...stamp(300 + beltIndex * 100 + coralIndex)
+          }))
+        )
       )
-    )
-  })
+      await db.fishes.bulkPut(
+        belts.flatMap((belt, beltIndex) =>
+          belt.fishes.map((fish, fishIndex) => ({ ...fish, ...stamp(400 + beltIndex * 100 + fishIndex) }))
+        )
+      )
+      await db.nurseries.bulkPut(
+        nurseries.map((nursery, index) => ({ ...nursery, ...stamp(500 + index) }))
+      )
+      await db.outplants.bulkPut(
+        outplants.map((outplant, index) => ({ ...outplant, lastRetryAt: 0, ...stamp(600 + index) }))
+      )
+    }
+  )
 }
 
 /** 打开数据库并幂等播种：仅当礁区表为空时灌入演示数据 */
@@ -355,9 +533,21 @@ export async function initDatabase(): Promise<void> {
 
 /** 清空全部业务表（导入覆盖与重置共用） */
 export async function clearAllTables(): Promise<void> {
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    await Promise.all([db.reefs.clear(), db.sites.clear(), db.belts.clear(), db.corals.clear(), db.fishes.clear()])
-  })
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.nurseries, db.outplants],
+    async () => {
+      await Promise.all([
+        db.reefs.clear(),
+        db.sites.clear(),
+        db.belts.clear(),
+        db.corals.clear(),
+        db.fishes.clear(),
+        db.nurseries.clear(),
+        db.outplants.clear()
+      ])
+    }
+  )
 }
 
 /** 清空并重新播种演示数据 */
@@ -368,14 +558,16 @@ export async function resetDatabase(): Promise<void> {
 
 /** 统计各表行数，供页脚概览与覆盖度页展示 */
 export async function countAll(): Promise<Record<string, number>> {
-  const [reefs, sites, belts, corals, fishes] = await Promise.all([
+  const [reefs, sites, belts, corals, fishes, nurseries, outplants] = await Promise.all([
     db.reefs.count(),
     db.sites.count(),
     db.belts.count(),
     db.corals.count(),
-    db.fishes.count()
+    db.fishes.count(),
+    db.nurseries.count(),
+    db.outplants.count()
   ])
-  return { reefs, sites, belts, corals, fishes }
+  return { reefs, sites, belts, corals, fishes, nurseries, outplants }
 }
 
 /** 写入结构版本号到 localStorage，便于覆盖度页比对 */

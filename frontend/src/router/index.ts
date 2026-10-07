@@ -38,6 +38,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '鱼类与无脊椎动物计数', icon: 'DataLine' }
   },
   {
+    path: '/nurseries',
+    name: 'nursery-board',
+    component: () => import('@/pages/NurseryBoard.vue'),
+    meta: { title: '苗圃台账与回播对账', icon: 'Place' }
+  },
+  {
     path: '/coverage',
     name: 'coverage-view',
     component: () => import('@/pages/CoverageView.vue'),

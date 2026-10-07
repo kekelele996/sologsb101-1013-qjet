@@ -8,6 +8,28 @@ export type BleachLevel = '无' | '轻' | '中' | '重' | '死亡'
 
 export const BLEACH_LEVELS: BleachLevel[] = ['无', '轻', '中', '重', '死亡']
 
+/**
+ * 珊瑚来源：
+ * - 自然珊瑚：礁区自然生长，计入白化指数
+ * - 回播珊瑚：苗圃培育后回播到受损礁区，带批号才进覆盖率，不参与白化评定
+ */
+export type CoralSource = '自然珊瑚' | '回播珊瑚'
+
+export const CORAL_SOURCES: CoralSource[] = ['自然珊瑚', '回播珊瑚']
+
+/** 旧数据没记来源，升级时统一按自然珊瑚回填 */
+export const LEGACY_CORAL_SOURCE: CoralSource = '自然珊瑚'
+
+/** 回播珊瑚判定：带批号才算回播（缺批号的回播记录不进礁区覆盖率） */
+export function isOutplanted(record: Pick<CoralRecord, 'source' | 'batchNo'>): boolean {
+  return record.source === '回播珊瑚' && !!record.batchNo && record.batchNo.trim().length > 0
+}
+
+/** 白化指数口径：只统计自然珊瑚，回播珊瑚不参与 */
+export function isNaturalForBleach(record: Pick<CoralRecord, 'source'>): boolean {
+  return (record.source ?? LEGACY_CORAL_SOURCE) === '自然珊瑚'
+}
+
 /** 珊瑚记录：样带内某属名、某形态的覆盖长度与白化等级 */
 export interface CoralRecord {
   id: string
@@ -21,6 +43,12 @@ export interface CoralRecord {
   coverCm: number
   /** 白化等级 */
   bleachLevel: BleachLevel
+  /** 来源：自然珊瑚 / 回播珊瑚（旧数据升级回填为自然珊瑚） */
+  source: CoralSource
+  /** 来源苗圃编号（仅回播珊瑚填写） */
+  nurseryNo: string
+  /** 培育批次号：回播珊瑚带批号才进礁区覆盖率（仅回播珊瑚填写） */
+  batchNo: string
   /** 备注（病敌害、断枝等） */
   remark: string
   createdAt: number
@@ -33,6 +61,9 @@ export interface CoralDraft {
   form: CoralForm
   coverCm: number
   bleachLevel: BleachLevel
+  source: CoralSource
+  nurseryNo: string
+  batchNo: string
   remark: string
 }
 
@@ -42,6 +73,9 @@ export function createEmptyCoralDraft(): CoralDraft {
     form: '枝状',
     coverCm: 100,
     bleachLevel: '无',
+    source: '自然珊瑚',
+    nurseryNo: '',
+    batchNo: '',
     remark: ''
   }
 }

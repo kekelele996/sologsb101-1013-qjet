@@ -9,7 +9,7 @@ import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
 import type { BleachLevel, CoralRecord, CoralForm } from '@/types/coralRecord'
-import { BLEACH_LEVELS } from '@/types/coralRecord'
+import { BLEACH_LEVELS, isNaturalForBleach, isOutplanted, LEGACY_CORAL_SOURCE } from '@/types/coralRecord'
 import type { FishCount } from '@/types/fishCount'
 import {
   bleachGrade,
@@ -36,6 +36,8 @@ export interface BeltCoverage {
   observer: string
   coralCount: number
   coverCmTotal: number
+  /** 其中回播珊瑚（带批号）覆盖长度 cm */
+  outplantCoverCm: number
   /** 珊瑚覆盖率（%） */
   coveragePct: number
   /** 白化指数 0 ~ 4 */
@@ -110,6 +112,18 @@ const BLEACH_WEIGHT_ORDER: Record<BleachLevel, number> = {
 
 const EMPTY_DISTRIBUTION = (): Record<BleachLevel, number> => ({ 无: 0, 轻: 0, 中: 0, 重: 0, 死亡: 0 })
 
+/** 进覆盖率：自然珊瑚全部计入；回播珊瑚带批号才计入 */
+function forCoverage(list: CoralRecord[]): CoralRecord[] {
+  return list.filter((coral) =>
+    (coral.source ?? LEGACY_CORAL_SOURCE) === '自然珊瑚' ? true : isOutplanted(coral)
+  )
+}
+
+/** 白化评定：仅自然珊瑚 */
+function forBleach(list: CoralRecord[]): CoralRecord[] {
+  return list.filter((coral) => isNaturalForBleach(coral))
+}
+
 /**
  * 组合式函数：基于三个 store 的响应式列表派生覆盖度、白化占比与鱼类密度。
  */
@@ -132,15 +146,23 @@ export function useCoverage(): UseCoverageResult {
     const reef = site ? reefOf(site.reefId) : null
     const beltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
     const beltFishes = fishes.value.filter((fish) => fish.beltId === belt.id)
+    const coverageList = forCoverage(beltCorals)
+    const bleachList = forBleach(beltCorals)
     const coverCmTotal = round(
-      beltCorals.reduce((sum, coral) => sum + coral.coverCm, 0),
+      coverageList.reduce((sum, coral) => sum + coral.coverCm, 0),
       1
     )
-    const index = bleachIndex(beltCorals)
+    const outplantCoverCm = round(
+      coverageList
+        .filter((coral) => (coral.source ?? LEGACY_CORAL_SOURCE) === '回播珊瑚')
+        .reduce((sum, coral) => sum + coral.coverCm, 0),
+      1
+    )
+    const index = bleachIndex(bleachList)
     const distribution = EMPTY_DISTRIBUTION()
     BLEACH_LEVELS.forEach((level) => {
       distribution[level] = round(
-        beltCorals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+        bleachList.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
     })
@@ -161,13 +183,14 @@ export function useCoverage(): UseCoverageResult {
       observer: belt.observer,
       coralCount: beltCorals.length,
       coverCmTotal,
+      outplantCoverCm,
       coveragePct: coralCoveragePct(coverCmTotal, belt.lengthM),
       bleachIndex: index,
       grade: bleachGrade(index),
-      bleachedSharePct: bleachedSharePct(beltCorals),
+      bleachedSharePct: bleachedSharePct(bleachList),
       distribution,
-      byGenus: groupByGenus(beltCorals),
-      byForm: groupByForm(beltCorals),
+      byGenus: groupByGenus(coverageList),
+      byForm: groupByForm(coverageList),
       fishTotal,
       invertebrateTotal,
       fishDensity: fishDensity(fishTotal, belt.lengthM)
@@ -194,17 +217,19 @@ export function useCoverage(): UseCoverageResult {
     const siteCorals = corals.value.filter((coral) => beltIds.has(coral.beltId))
     const siteFishes = fishes.value.filter((fish) => beltIds.has(fish.beltId))
     const coverCmTotal = round(
-      siteCorals.reduce((sum, coral) => sum + coral.coverCm, 0),
+      forCoverage(siteCorals).reduce((sum, coral) => sum + coral.coverCm, 0),
       1
     )
     const coverages = siteBelts.map((belt) => {
-      const beltCorals = siteCorals.filter((coral) => coral.beltId === belt.id)
+      const beltCorals = forCoverage(siteCorals.filter((coral) => coral.beltId === belt.id))
       return coralCoveragePct(
         beltCorals.reduce((sum, coral) => sum + coral.coverCm, 0),
         belt.lengthM
       )
     })
-    const indices = siteBelts.map((belt) => bleachIndex(siteCorals.filter((coral) => coral.beltId === belt.id)))
+    const indices = siteBelts.map((belt) =>
+      bleachIndex(forBleach(siteCorals.filter((coral) => coral.beltId === belt.id)))
+    )
     const avgBleachIndex =
       indices.length === 0 ? 0 : round(indices.reduce((sum, value) => sum + value, 0) / indices.length, 2)
     const fishTotal = siteFishes.filter((fish) => fish.category === '鱼类').reduce((sum, fish) => sum + fish.count, 0)
@@ -222,7 +247,7 @@ export function useCoverage(): UseCoverageResult {
         coverages.length === 0 ? 0 : round(coverages.reduce((sum, value) => sum + value, 0) / coverages.length, 2),
       avgBleachIndex,
       grade: bleachGrade(avgBleachIndex),
-      bleachedSharePct: bleachedSharePct(siteCorals),
+      bleachedSharePct: bleachedSharePct(forBleach(siteCorals)),
       fishTotal,
       invertebrateTotal: siteFishes
         .filter((fish) => fish.category === '无脊椎动物')
@@ -244,9 +269,10 @@ export function useCoverage(): UseCoverageResult {
 
   const globalDistribution = computed<Record<BleachLevel, number>>(() => {
     const distribution = EMPTY_DISTRIBUTION()
+    const natural = forBleach(corals.value)
     BLEACH_LEVELS.forEach((level) => {
       distribution[level] = round(
-        corals.value.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+        natural.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
     })

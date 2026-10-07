@@ -207,7 +207,9 @@ export const useReefStore = defineStore('reef', () => {
         continue
       }
       const corals = await db.corals.where('beltId').anyOf(beltIds).toArray()
-      result[site.id] = round(bleachIndex(corals), 2)
+      // 白化指数仅按自然珊瑚；回播珊瑚（含旧数据未标来源的，按自然珊瑚回填口径）剔除
+      const natural = corals.filter((coral) => (coral.source ?? '自然珊瑚') === '自然珊瑚')
+      result[site.id] = round(bleachIndex(natural), 2)
     }
     return result
   }

@@ -46,7 +46,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const surveyStore = useSurveyStore()
 
-const EMPTY_COUNTS: CountMap = { reefs: 0, sites: 0, belts: 0, corals: 0, fishes: 0 }
+const EMPTY_COUNTS: CountMap = { reefs: 0, sites: 0, belts: 0, corals: 0, fishes: 0, nurseries: 0, outplants: 0 }
 
 const counts = ref<CountMap>(EMPTY_COUNTS)
 const lastBackupAt = ref<string | null>(null)
@@ -249,7 +249,7 @@ onMounted(() => {
       <div>
         <h2 class="page__title">白化等级评定与覆盖度汇总</h2>
         <p class="gb-hint">
-          按样带汇总珊瑚覆盖率、白化指数（按覆盖长度加权，0 ~ 4）与鱼类密度，并可按礁区、白化等级筛选；同时提供结构版本查看与 JSON 导入导出。
+          按样带汇总珊瑚覆盖率（自然珊瑚 + 带批号的回播珊瑚）、白化指数（仅按自然珊瑚，0 ~ 4）与鱼类密度；并可按礁区、白化等级筛选；同时提供结构版本查看与 JSON 导入导出。
         </p>
       </div>
       <div class="page__actions">
@@ -303,7 +303,7 @@ onMounted(() => {
         <h3>白化等级分布（覆盖长度 cm）</h3>
         <span class="gb-hint">
           总体白化指数 {{ surveyStore.globalStats.bleachIndex }}（{{ surveyStore.globalStats.grade }}）· 白化占比
-          {{ surveyStore.globalStats.bleachedSharePct }}% · 存在白化样带 {{ totals.bleachedBelts }} 条
+          {{ surveyStore.globalStats.bleachedSharePct }}%（仅自然珊瑚）· 存在白化样带 {{ totals.bleachedBelts }} 条
         </span>
       </div>
       <div class="gb-bars">
@@ -440,7 +440,7 @@ onMounted(() => {
       <div class="gb-panel-title">
         <h3>结构版本与全量 JSON 导入导出</h3>
         <span class="gb-hint">
-          导出内容包含 reefs / sites / belts / corals / fishes 五张表 · 最近备份
+          导出内容包含 reefs / sites / belts / corals / fishes / nurseries / outplants 七张表 · 最近备份
           {{ lastBackupAt ? new Date(lastBackupAt).toLocaleString('zh-CN') : '尚未备份' }}
         </span>
       </div>
@@ -479,6 +479,7 @@ onMounted(() => {
         <el-descriptions-item label="礁区 / 站位">{{ counts.reefs }} / {{ counts.sites }}</el-descriptions-item>
         <el-descriptions-item label="样带 / 珊瑚记录">{{ counts.belts }} / {{ counts.corals }}</el-descriptions-item>
         <el-descriptions-item label="鱼类计数">{{ counts.fishes }}</el-descriptions-item>
+        <el-descriptions-item label="苗圃批次 / 回播对账">{{ counts.nurseries }} / {{ counts.outplants }}</el-descriptions-item>
         <el-descriptions-item label="最近备份时间">
           {{ lastBackupAt ? new Date(lastBackupAt).toLocaleString('zh-CN') : '尚未备份' }}
         </el-descriptions-item>

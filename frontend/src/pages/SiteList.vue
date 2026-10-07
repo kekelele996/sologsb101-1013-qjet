@@ -56,7 +56,8 @@ const rows = computed(() => {
     const belts = beltStore.beltsOfSite(site.id)
     const beltIds = new Set(belts.map((belt) => belt.id))
     const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
-    const index = bleachIndex(corals)
+    // 白化指数仅按自然珊瑚（回播珊瑚不参与）
+    const index = bleachIndex(surveyStore.bleachCorals(corals))
     return {
       site,
       beltCount: belts.length,

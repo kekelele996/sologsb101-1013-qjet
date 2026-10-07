@@ -5,8 +5,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { db, createId, watchTable } from '@/utils/db'
-import type { BleachLevel, CoralForm, CoralRecord } from '@/types/coralRecord'
-import { BLEACH_LEVELS } from '@/types/coralRecord'
+import type { BleachLevel, CoralForm, CoralRecord, CoralSource } from '@/types/coralRecord'
+import { BLEACH_LEVELS, isNaturalForBleach, isOutplanted, LEGACY_CORAL_SOURCE } from '@/types/coralRecord'
 import type { CountCategory, FishCount, SizeClass } from '@/types/fishCount'
 import type { Reef } from '@/types/reef'
 import type { Site } from '@/types/site'
@@ -70,6 +70,9 @@ export const useSurveyStore = defineStore('survey', () => {
     form: '枝状' as CoralForm,
     coverCm: 100,
     bleachLevel: '无' as BleachLevel,
+    source: '自然珊瑚' as CoralSource,
+    nurseryNo: '',
+    batchNo: '',
     remark: ''
   })
   /** 鱼类计数草稿 */
@@ -117,6 +120,33 @@ export const useSurveyStore = defineStore('survey', () => {
       })
   }
 
+  /**
+   * 进礁区覆盖率的珊瑚记录：
+   * 自然珊瑚全部计入；回播（移栽）珊瑚只有带批号才计入，缺批号的回播记录剔除。
+   */
+  function coverageCorals(list: CoralRecord[]): CoralRecord[] {
+    return list.filter((coral) => {
+      const source = coral.source ?? LEGACY_CORAL_SOURCE
+      if (source === '自然珊瑚') return true
+      return isOutplanted(coral)
+    })
+  }
+
+  /** 参与白化评定的珊瑚：仅自然珊瑚（回播珊瑚不参与白化指数） */
+  function bleachCorals(list: CoralRecord[]): CoralRecord[] {
+    return list.filter((coral) => isNaturalForBleach(coral))
+  }
+
+  /** 某样带进覆盖率的珊瑚记录 */
+  function coverageCoralsOfBelt(beltId: string | null | undefined): CoralRecord[] {
+    return coverageCorals(coralsOfBelt(beltId))
+  }
+
+  /** 某样带参与白化评定的自然珊瑚 */
+  function bleachCoralsOfBelt(beltId: string | null | undefined): CoralRecord[] {
+    return bleachCorals(coralsOfBelt(beltId))
+  }
+
   /** 某样带的鱼类/无脊椎动物计数 */
   function fishesOfBelt(beltId: string | null | undefined): FishCount[] {
     if (!beltId) return []
@@ -145,18 +175,21 @@ export const useSurveyStore = defineStore('survey', () => {
         const reef = site ? reefs.value.find((item) => item.id === site.reefId) : undefined
         const beltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
         const beltFishes = fishes.value.filter((fish) => fish.beltId === belt.id)
+        // 覆盖率：自然珊瑚 + 带批号的回播珊瑚；白化：仅自然珊瑚
+        const forCoverage = coverageCorals(beltCorals)
+        const forBleach = bleachCorals(beltCorals)
         const coverCmTotal = round(
-          beltCorals.reduce((sum, coral) => sum + coral.coverCm, 0),
+          forCoverage.reduce((sum, coral) => sum + coral.coverCm, 0),
           1
         )
         const distribution: Record<BleachLevel, number> = { 无: 0, 轻: 0, 中: 0, 重: 0, 死亡: 0 }
         BLEACH_LEVELS.forEach((level) => {
           distribution[level] = round(
-            beltCorals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+            forBleach.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
             1
           )
         })
-        const index = bleachIndex(beltCorals)
+        const index = bleachIndex(forBleach)
         const fishTotal = beltFishes.filter((fish) => fish.category === '鱼类').reduce((sum, fish) => sum + fish.count, 0)
         return {
           beltId: belt.id,
@@ -174,7 +207,7 @@ export const useSurveyStore = defineStore('survey', () => {
           coveragePct: coralCoveragePct(coverCmTotal, belt.lengthM),
           bleachIndex: index,
           grade: bleachGrade(index),
-          bleachedSharePct: bleachedSharePct(beltCorals),
+          bleachedSharePct: bleachedSharePct(forBleach),
           distribution,
           fishTotal,
           invertebrateTotal: beltFishes
@@ -215,23 +248,25 @@ export const useSurveyStore = defineStore('survey', () => {
   /** 全局白化等级分布与总体指数 */
   const globalStats = computed(() => {
     const distribution: Record<BleachLevel, number> = { 无: 0, 轻: 0, 中: 0, 重: 0, 死亡: 0 }
+    const forBleach = bleachCorals(corals.value)
     BLEACH_LEVELS.forEach((level) => {
       distribution[level] = round(
-        corals.value.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+        forBleach.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
     })
-    const index = bleachIndex(corals.value)
+    const index = bleachIndex(forBleach)
     return {
       coralCount: corals.value.length,
       fishCount: fishes.value.length,
+      // 覆盖长度合计含带批号的回播珊瑚；缺批号的回播记录不进覆盖率
       coverCmTotal: round(
-        corals.value.reduce((sum, coral) => sum + coral.coverCm, 0),
+        coverageCorals(corals.value).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       ),
       bleachIndex: index,
       grade: bleachGrade(index),
-      bleachedSharePct: bleachedSharePct(corals.value),
+      bleachedSharePct: bleachedSharePct(forBleach),
       distribution
     }
   })
@@ -285,6 +320,10 @@ export const useSurveyStore = defineStore('survey', () => {
       form: row.form,
       coverCm: row.coverCm,
       bleachLevel: row.bleachLevel,
+      // 批量粘贴只录自然珊瑚；回播珊瑚走单条录入并带批号
+      source: '自然珊瑚',
+      nurseryNo: '',
+      batchNo: '',
       remark: '',
       createdAt: now + index,
       updatedAt: now + index
@@ -390,6 +429,10 @@ export const useSurveyStore = defineStore('survey', () => {
     globalStats,
     start,
     coralsOfBelt,
+    coverageCorals,
+    bleachCorals,
+    coverageCoralsOfBelt,
+    bleachCoralsOfBelt,
     fishesOfBelt,
     fishSummaryOfBelt,
     patchFilter,

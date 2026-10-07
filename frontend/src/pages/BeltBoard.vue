@@ -41,13 +41,15 @@ const form = reactive({
   observer: ''
 })
 
-/** 样带行：回显珊瑚记录数、鱼类记录数、覆盖率与白化指数 */
+/** 样带行：回显珊瑚记录数、鱼类记录数、覆盖率（含带批号回播）与白化指数（仅自然珊瑚） */
 const rows = computed(() =>
   beltStore.beltsOfSite(siteId.value).map((belt) => {
     const corals = surveyStore.coralsOfBelt(belt.id)
+    const coverageCorals = surveyStore.coverageCoralsOfBelt(belt.id)
+    const bleachCorals = surveyStore.bleachCoralsOfBelt(belt.id)
     const fishes = surveyStore.fishesOfBelt(belt.id)
-    const coverCmTotal = corals.reduce((sum, coral) => sum + coral.coverCm, 0)
-    const index = bleachIndex(corals)
+    const coverCmTotal = coverageCorals.reduce((sum, coral) => sum + coral.coverCm, 0)
+    const index = bleachIndex(bleachCorals)
     const fishTotal = fishes.filter((fish) => fish.category === '鱼类').reduce((sum, fish) => sum + fish.count, 0)
     return {
       belt,

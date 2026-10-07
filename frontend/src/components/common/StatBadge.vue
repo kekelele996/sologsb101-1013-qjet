@@ -5,7 +5,7 @@
  */
 import { computed } from 'vue'
 import type { Component } from 'vue'
-import { DataLine, Files, Grid, Histogram, Odometer, PieChart, TrendCharts, WarningFilled } from '@element-plus/icons-vue'
+import { DataLine, Files, Grid, Histogram, Odometer, PieChart, Place, TrendCharts, WarningFilled } from '@element-plus/icons-vue'
 
 type BadgeTone = 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info'
 
@@ -47,6 +47,7 @@ const iconMap: Record<string, Component> = {
   Histogram,
   Odometer,
   PieChart,
+  Place,
   TrendCharts,
   WarningFilled
 }

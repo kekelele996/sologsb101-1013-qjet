@@ -49,7 +49,9 @@ const cards = computed(() =>
     const beltIds = new Set(belts.map((belt) => belt.id))
     const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
     const fishes = surveyStore.fishes.filter((fish) => beltIds.has(fish.beltId))
-    const index = bleachIndex(corals)
+    // 白化指数仅按自然珊瑚（回播珊瑚不参与）
+    const naturalCorals = surveyStore.bleachCorals(corals)
+    const index = bleachIndex(naturalCorals)
     return {
       reef,
       siteCount: sites.length,

@@ -5,10 +5,11 @@
  */
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DataLine, Files, Grid, Odometer, PieChart } from '@element-plus/icons-vue'
+import { DataLine, Files, Grid, Odometer, PieChart, Place } from '@element-plus/icons-vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useNurseryStore } from '@/stores/nurseryStore'
 import { DB_NAME, DB_VERSION } from '@/utils/db'
 
 const route = useRoute()
@@ -16,11 +17,13 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const nurseryStore = useNurseryStore()
 
 onMounted(() => {
   reefStore.start()
   beltStore.start()
   surveyStore.start()
+  nurseryStore.start()
 })
 
 /** 层级路由统一归属到最上层导航项 */
@@ -33,6 +36,7 @@ const activeKey = computed(() => {
 
 const navItems = computed(() => [
   { key: '/reefs', label: '礁区台账', icon: Odometer, badge: String(reefStore.reefs.length) },
+  { key: '/nurseries', label: '苗圃回播', icon: Place, badge: String(nurseryStore.suspendedCount) },
   { key: '/coverage', label: '覆盖度汇总', icon: PieChart, badge: String(surveyStore.corals.length) }
 ])
 
@@ -53,7 +57,9 @@ const contextLinks = computed(() => {
     if (belt) links.push({ label: '所属站位样带', path: `/sites/${belt.siteId}/belts` })
     links.push({ label: '珊瑚计数', path: `/belts/${id}/corals` })
     links.push({ label: '鱼类计数', path: `/belts/${id}/fishes` })
+    links.push({ label: '苗圃回播对账', path: '/nurseries' })
   }
+  if (route.path.startsWith('/nurseries')) links.push({ label: '覆盖度汇总', path: '/coverage' })
   if (route.path.startsWith('/coverage')) links.push({ label: '礁区台账', path: '/reefs' })
   return links
 })
@@ -108,7 +114,8 @@ function go(path: string): void {
       </span>
       <span>
         礁区 {{ reefStore.reefs.length }} · 站位 {{ reefStore.sites.length }} · 样带 {{ beltStore.belts.length }} · 珊瑚记录
-        {{ surveyStore.corals.length }} · 计数记录 {{ surveyStore.fishes.length }}
+        {{ surveyStore.corals.length }} · 计数记录 {{ surveyStore.fishes.length }} · 苗圃批次
+        {{ nurseryStore.nurseries.length }} · 回播对账 {{ nurseryStore.outplants.length }}
       </span>
     </footer>
   </div>

@@ -13,24 +13,45 @@ import {
 } from '@/utils/db'
 import {
   BLEACH_LEVELS,
+  LEGACY_CORAL_SOURCE,
   type BleachLevel
 } from '@/types/coralRecord'
 import { bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, fishDensity, round } from '@/utils/bleach'
 
 /** 备份集合键名 */
-export const BACKUP_KEYS = ['reefs', 'sites', 'belts', 'corals', 'fishes'] as const
+export const BACKUP_KEYS = ['reefs', 'sites', 'belts', 'corals', 'fishes', 'nurseries', 'outplants'] as const
 export type BackupKey = (typeof BACKUP_KEYS)[number]
 
 export type CountMap = Record<BackupKey, number>
 
+/** 进礁区覆盖率：自然珊瑚 + 带批号的回播珊瑚 */
+function coverageCoralsOf<
+  T extends { source?: import('@/types/coralRecord').CoralSource; batchNo?: string }
+>(list: T[]): T[] {
+  return list.filter((coral) =>
+    (coral.source ?? LEGACY_CORAL_SOURCE) === '自然珊瑚'
+      ? true
+      : (coral.source ?? LEGACY_CORAL_SOURCE) === '回播珊瑚' && !!coral.batchNo && coral.batchNo.trim().length > 0
+  )
+}
+
+/** 白化评定：仅自然珊瑚 */
+function naturalCoralsOf<
+  T extends { source?: import('@/types/coralRecord').CoralSource }
+>(list: T[]): T[] {
+  return list.filter((coral) => (coral.source ?? LEGACY_CORAL_SOURCE) === '自然珊瑚')
+}
+
 /** 组装当前本地数据的完整快照 */
 export async function buildBackupPayload(): Promise<BackupPayload> {
-  const [reefs, sites, belts, corals, fishes] = await Promise.all([
+  const [reefs, sites, belts, corals, fishes, nurseries, outplants] = await Promise.all([
     db.reefs.toArray(),
     db.sites.toArray(),
     db.belts.toArray(),
     db.corals.toArray(),
-    db.fishes.toArray()
+    db.fishes.toArray(),
+    db.nurseries.toArray(),
+    db.outplants.toArray()
   ])
   return {
     app: 'gbcoralbelt',
@@ -40,7 +61,9 @@ export async function buildBackupPayload(): Promise<BackupPayload> {
     sites,
     belts,
     corals,
-    fishes
+    fishes,
+    nurseries,
+    outplants
   }
 }
 
@@ -66,7 +89,9 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     sites: obj.sites ?? [],
     belts: obj.belts ?? [],
     corals: obj.corals ?? [],
-    fishes: obj.fishes ?? []
+    fishes: obj.fishes ?? [],
+    nurseries: obj.nurseries ?? [],
+    outplants: obj.outplants ?? []
   }
   return { ok: true, errors, payload }
 }
@@ -78,7 +103,9 @@ export function countPayload(payload: BackupPayload): CountMap {
     sites: payload.sites.length,
     belts: payload.belts.length,
     corals: payload.corals.length,
-    fishes: payload.fishes.length
+    fishes: payload.fishes.length,
+    nurseries: payload.nurseries.length,
+    outplants: payload.outplants.length
   }
 }
 
@@ -114,13 +141,19 @@ export function readFileText(file: File): Promise<string> {
 /** 导入快照：overwrite=true 先清空全部表，否则按主键合并 */
 export async function importBackup(payload: BackupPayload, overwrite: boolean): Promise<CountMap> {
   if (overwrite) await clearAllTables()
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    await db.reefs.bulkPut(payload.reefs)
-    await db.sites.bulkPut(payload.sites)
-    await db.belts.bulkPut(payload.belts)
-    await db.corals.bulkPut(payload.corals)
-    await db.fishes.bulkPut(payload.fishes)
-  })
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.nurseries, db.outplants],
+    async () => {
+      await db.reefs.bulkPut(payload.reefs)
+      await db.sites.bulkPut(payload.sites)
+      await db.belts.bulkPut(payload.belts)
+      await db.corals.bulkPut(payload.corals)
+      await db.fishes.bulkPut(payload.fishes)
+      await db.nurseries.bulkPut(payload.nurseries)
+      await db.outplants.bulkPut(payload.outplants)
+    }
+  )
   return countPayload(payload)
 }
 
@@ -155,7 +188,16 @@ export function remapIds(payload: BackupPayload): BackupPayload {
     id: createId('fsh'),
     beltId: beltMap.get(fish.beltId) ?? fish.beltId
   }))
-  return { ...payload, reefs, sites, belts, corals, fishes }
+  // 苗圃批次与回播记录按业务编号（苗圃编号 / 批号 / 样带编号）对账，
+  // 不依赖外业主键，追加导入时原样保留其业务键即可。
+  const nurseries = payload.nurseries
+  const outplants = payload.outplants.map((outplant) => ({
+    ...outplant,
+    id: createId('out'),
+    coralId: '',
+    beltId: beltMap.get(outplant.beltId) ?? outplant.beltId
+  }))
+  return { ...payload, reefs, sites, belts, corals, fishes, nurseries, outplants }
 }
 
 /** 白化等级分布：各等级累计覆盖长度 */
@@ -214,16 +256,18 @@ export function buildCoverageLines(payload: BackupPayload): CoverageLine[] {
       const reef = site ? reefById.get(site.reefId) : undefined
       const corals = coralsByBelt.get(belt.id) ?? []
       const fishes = fishesByBelt.get(belt.id) ?? []
+      const forCoverage = coverageCoralsOf(corals)
+      const forBleach = naturalCoralsOf(corals)
       const coverCmTotal = round(
-        corals.reduce((sum, coral) => sum + coral.coverCm, 0),
+        forCoverage.reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
-      const index = bleachIndex(corals)
+      const index = bleachIndex(forBleach)
       const grade = bleachGrade(index)
       const distribution: BleachDistribution = { 无: 0, 轻: 0, 中: 0, 重: 0, 死亡: 0 }
       BLEACH_LEVELS.forEach((level) => {
         distribution[level] = round(
-          corals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+          forBleach.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
           1
         )
       })
@@ -247,7 +291,7 @@ export function buildCoverageLines(payload: BackupPayload): CoverageLine[] {
         coveragePct: coralCoveragePct(coverCmTotal, belt.lengthM),
         bleachIndex: index,
         grade,
-        bleachedSharePct: bleachedSharePct(corals),
+        bleachedSharePct: bleachedSharePct(forBleach),
         distribution,
         fishTotal,
         invertebrateTotal,
@@ -257,7 +301,7 @@ export function buildCoverageLines(payload: BackupPayload): CoverageLine[] {
             ? '该样带尚未录入珊瑚记录'
             : grade === '无'
               ? `珊瑚覆盖率 ${coralCoveragePct(coverCmTotal, belt.lengthM)}%，未见白化`
-              : `珊瑚覆盖率 ${coralCoveragePct(coverCmTotal, belt.lengthM)}%，白化指数 ${index}（${grade}），白化占比 ${bleachedSharePct(corals)}%`
+              : `珊瑚覆盖率 ${coralCoveragePct(coverCmTotal, belt.lengthM)}%，白化指数 ${index}（${grade}），白化占比 ${bleachedSharePct(forBleach)}%（白化仅按自然珊瑚计）`
       }
     })
     .sort((a, b) => b.bleachIndex - a.bleachIndex)
@@ -295,7 +339,7 @@ export function buildReefSummaries(payload: BackupPayload, lines: CoverageLine[]
       beltCount: beltIds.size,
       coralCount: corals.length,
       coverCmTotal: round(
-        corals.reduce((sum, coral) => sum + coral.coverCm, 0),
+        coverageCoralsOf(corals).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       ),
       avgBleachIndex,
