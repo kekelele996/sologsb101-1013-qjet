@@ -4,6 +4,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
  * 路由表：路径与提示词逐字一致。
  * /reefs、/reefs/:id/sites、/sites/:id/belts、/belts/:id/corals、/belts/:id/fishes、/coverage
  * 全部页面懒加载，构建时自动分包。
+ * /nurseries 为苗圃组一侧的苗圃台账与回播对账页。
  */
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/reefs' },
@@ -12,6 +13,12 @@ const routes: RouteRecordRaw[] = [
     name: 'reef-list',
     component: () => import('@/pages/ReefList.vue'),
     meta: { title: '礁区台账', icon: 'Odometer' }
+  },
+  {
+    path: '/nurseries',
+    name: 'nursery-board',
+    component: () => import('@/pages/NurseryBoard.vue'),
+    meta: { title: '苗圃台账与回播对账', icon: 'Box' }
   },
   {
     path: '/reefs/:id/sites',

@@ -5,13 +5,23 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { db, createId, watchTable } from '@/utils/db'
-import type { BleachLevel, CoralForm, CoralRecord } from '@/types/coralRecord'
-import { BLEACH_LEVELS } from '@/types/coralRecord'
+import type { BleachLevel, CoralForm, CoralRecord, CoralSource } from '@/types/coralRecord'
+import { BLEACH_LEVELS, isNaturalCoral, isOutplant } from '@/types/coralRecord'
 import type { CountCategory, FishCount, SizeClass } from '@/types/fishCount'
 import type { Reef } from '@/types/reef'
 import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
-import { bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, fishDensity, round } from '@/utils/bleach'
+import type { Nursery } from '@/types/nursery'
+import {
+  bleachGrade,
+  bleachIndex,
+  bleachedSharePct,
+  coralCoveragePct,
+  coralsInCoverage,
+  fishDensity,
+  naturalCoralsOnly,
+  round
+} from '@/utils/bleach'
 
 /** 覆盖度汇总页筛选条件 */
 export interface SurveyFilterState {
@@ -45,6 +55,8 @@ export interface CoverageSummaryRow {
   observer: string
   coralCount: number
   coverCmTotal: number
+  /** 其中苗圃回播（带批号、进覆盖率）的覆盖长度 cm */
+  outplantCm: number
   coveragePct: number
   bleachIndex: number
   grade: BleachLevel
@@ -61,6 +73,7 @@ export const useSurveyStore = defineStore('survey', () => {
   const reefs = ref<Reef[]>([])
   const sites = ref<Site[]>([])
   const belts = ref<Belt[]>([])
+  const nurseries = ref<Nursery[]>([])
   const ready = ref(false)
   const error = ref<string | null>(null)
   const filter = ref<SurveyFilterState>(createEmptySurveyFilter())
@@ -70,7 +83,10 @@ export const useSurveyStore = defineStore('survey', () => {
     form: '枝状' as CoralForm,
     coverCm: 100,
     bleachLevel: '无' as BleachLevel,
-    remark: ''
+    remark: '',
+    source: 'natural' as CoralSource,
+    nurseryId: '',
+    batchNo: ''
   })
   /** 鱼类计数草稿 */
   const fishDraft = ref({
@@ -102,7 +118,17 @@ export const useSurveyStore = defineStore('survey', () => {
     watchTable<Belt>(() => db.belts).subscribe((rows) => {
       belts.value = rows
     })
+    watchTable<Nursery>(() => db.nurseries).subscribe((rows) => {
+      nurseries.value = rows
+    })
   }
+
+  /** 苗圃 id → 批次集合，覆盖率口径用来校验回播批号是否真实存在 */
+  const nurseryBatchIndex = computed<Map<string, { batches: Array<{ batchNo: string }> }>>(() => {
+    const map = new Map<string, { batches: Array<{ batchNo: string }> }>()
+    nurseries.value.forEach((nursery) => map.set(nursery.id, { batches: nursery.batches }))
+    return map
+  })
 
   /** 某样带的珊瑚记录（按白化等级降序、覆盖长度降序） */
   function coralsOfBelt(beltId: string | null | undefined): CoralRecord[] {
@@ -143,20 +169,33 @@ export const useSurveyStore = defineStore('survey', () => {
       .map((belt) => {
         const site = sites.value.find((item) => item.id === belt.siteId)
         const reef = site ? reefs.value.find((item) => item.id === site.reefId) : undefined
-        const beltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
+        const allBeltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
+        // 覆盖率：自然珊瑚 + 带批号且批号在苗圃台账中存在的移栽珊瑚
+        const lookup = (nurseryId: string) => nurseryBatchIndex.value.get(nurseryId)
+        const beltCorals = coralsInCoverage(allBeltCorals, lookup)
+        // 白化指数 / 白化占比 / 分布：仍只按自然珊瑚算
+        const naturalCorals = naturalCoralsOnly(allBeltCorals)
         const beltFishes = fishes.value.filter((fish) => fish.beltId === belt.id)
         const coverCmTotal = round(
           beltCorals.reduce((sum, coral) => sum + coral.coverCm, 0),
           1
         )
+        const outplantCm = round(
+          beltCorals
+            .filter((coral) => !isNaturalCoral(coral))
+            .reduce((sum, coral) => sum + coral.coverCm, 0),
+          1
+        )
         const distribution: Record<BleachLevel, number> = { 无: 0, 轻: 0, 中: 0, 重: 0, 死亡: 0 }
         BLEACH_LEVELS.forEach((level) => {
           distribution[level] = round(
-            beltCorals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+            naturalCorals
+              .filter((coral) => coral.bleachLevel === level)
+              .reduce((sum, coral) => sum + coral.coverCm, 0),
             1
           )
         })
-        const index = bleachIndex(beltCorals)
+        const index = bleachIndex(naturalCorals)
         const fishTotal = beltFishes.filter((fish) => fish.category === '鱼类').reduce((sum, fish) => sum + fish.count, 0)
         return {
           beltId: belt.id,
@@ -171,10 +210,11 @@ export const useSurveyStore = defineStore('survey', () => {
           observer: belt.observer,
           coralCount: beltCorals.length,
           coverCmTotal,
+          outplantCm,
           coveragePct: coralCoveragePct(coverCmTotal, belt.lengthM),
           bleachIndex: index,
           grade: bleachGrade(index),
-          bleachedSharePct: bleachedSharePct(beltCorals),
+          bleachedSharePct: bleachedSharePct(naturalCorals),
           distribution,
           fishTotal,
           invertebrateTotal: beltFishes
@@ -214,24 +254,32 @@ export const useSurveyStore = defineStore('survey', () => {
 
   /** 全局白化等级分布与总体指数 */
   const globalStats = computed(() => {
+    // 白化口径只取自然珊瑚；覆盖率口径另算回播长度
+    const naturalCorals = naturalCoralsOnly(corals.value)
+    const lookup = (nurseryId: string) => nurseryBatchIndex.value.get(nurseryId)
+    const inCoverage = coralsInCoverage(corals.value, lookup)
     const distribution: Record<BleachLevel, number> = { 无: 0, 轻: 0, 中: 0, 重: 0, 死亡: 0 }
     BLEACH_LEVELS.forEach((level) => {
       distribution[level] = round(
-        corals.value.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+        naturalCorals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
     })
-    const index = bleachIndex(corals.value)
+    const index = bleachIndex(naturalCorals)
     return {
       coralCount: corals.value.length,
       fishCount: fishes.value.length,
       coverCmTotal: round(
-        corals.value.reduce((sum, coral) => sum + coral.coverCm, 0),
+        inCoverage.reduce((sum, coral) => sum + coral.coverCm, 0),
+        1
+      ),
+      outplantCm: round(
+        inCoverage.filter((coral) => !isNaturalCoral(coral)).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       ),
       bleachIndex: index,
       grade: bleachGrade(index),
-      bleachedSharePct: bleachedSharePct(corals.value),
+      bleachedSharePct: bleachedSharePct(naturalCorals),
       distribution
     }
   })
@@ -254,6 +302,10 @@ export const useSurveyStore = defineStore('survey', () => {
 
   /* ------------------------------ 珊瑚记录 ------------------------------ */
 
+  /**
+   * 外业写入：珊瑚记录（含带回播批号的移栽珊瑚）落库后即成立，
+   * 再触发苗圃侧对账扣减；扣减失败只改苗圃台账（failed），不影响本侧记录（外业照旧）。
+   */
   async function createCoral(
     beltId: string,
     payload: Omit<CoralRecord, 'id' | 'createdAt' | 'updatedAt' | 'beltId'>
@@ -261,18 +313,43 @@ export const useSurveyStore = defineStore('survey', () => {
     const now = Date.now()
     const row: CoralRecord = { ...payload, beltId, id: createId('cor'), createdAt: now, updatedAt: now }
     await db.corals.put(row)
+    await requestSettle(beltId, row)
     return row
   }
 
   async function updateCoral(id: string, patch: Partial<CoralRecord>): Promise<void> {
+    const before = await db.corals.get(id)
     await db.corals.update(id, { ...patch, updatedAt: Date.now() } as never)
+    if (before) await requestSettle(before.beltId)
   }
 
   async function removeCoral(id: string): Promise<void> {
+    const before = await db.corals.get(id)
     await db.corals.delete(id)
+    if (before) await requestSettle(before.beltId)
   }
 
-  /** 批量导入粘贴行（替换该样带原有珊瑚记录） */
+  /**
+   * 仅当涉及移栽珊瑚时触发苗圃侧重跑（只重跑本侧 = 只重跑该样带台账）。
+   * nurseryStore 懒加载引入，避免与 store 初始化顺序耦合。
+   */
+  async function requestSettle(beltId: string, record?: CoralRecord): Promise<void> {
+    const shouldSettle =
+      record?.source === 'nursery' ||
+      (await db.corals.where('beltId').equals(beltId).toArray()).some((coral) => coral.source === 'nursery')
+    if (!shouldSettle) return
+    const { useNurseryStore } = await import('@/stores/nurseryStore')
+    try {
+      await useNurseryStore().settleBelt(beltId)
+    } catch {
+      // 苗圃侧扣减失败不外溢：外业记录照旧，台账留 failed 由苗圃组重跑
+    }
+  }
+
+  /**
+   * 批量导入粘贴行（外业摸底数据，一律按自然珊瑚处理）。
+   * 只替换该样带的自然珊瑚记录，保留已录入的移栽珊瑚；随后按全量重算该样带台账。
+   */
   async function importCoralRows(
     beltId: string,
     rows: Array<{ genus: string; form: CoralForm; coverCm: number; bleachLevel: BleachLevel }>
@@ -286,11 +363,19 @@ export const useSurveyStore = defineStore('survey', () => {
       coverCm: row.coverCm,
       bleachLevel: row.bleachLevel,
       remark: '',
+      source: 'natural',
+      nurseryId: '',
+      batchNo: '',
       createdAt: now + index,
       updatedAt: now + index
     }))
     await db.transaction('rw', [db.corals], async () => {
-      await db.corals.where('beltId').equals(beltId).delete()
+      // 批量粘贴是外业普查数据：仅覆盖自然珊瑚，移栽（苗圃回播）记录保留不动
+      await db.corals
+        .where('beltId')
+        .equals(beltId)
+        .filter((coral) => coral.source !== 'nursery')
+        .delete()
       if (records.length > 0) await db.corals.bulkPut(records)
     })
     return records.length
@@ -378,6 +463,7 @@ export const useSurveyStore = defineStore('survey', () => {
     reefs,
     sites,
     belts,
+    nurseries,
     ready,
     error,
     filter,

@@ -10,20 +10,25 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, DocumentCopy, Edit, Plus } from '@element-plus/icons-vue'
 import BleachTag from '@/components/common/BleachTag.vue'
+import SourceTag from '@/components/common/SourceTag.vue'
 import StatBadge from '@/components/common/StatBadge.vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import RouteMissingPanel from '@/components/common/RouteMissingPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useNurseryStore } from '@/stores/nurseryStore'
 import {
   BLEACH_LEVELS,
   COMMON_GENERA,
   CORAL_FORMS,
+  CORAL_SOURCES,
+  CORAL_SOURCE_LABEL,
+  isOutplant,
   parseCoralPaste
 } from '@/types/coralRecord'
-import type { BleachLevel, CoralForm, CoralRecord } from '@/types/coralRecord'
-import { BLEACH_BG, BLEACH_COLOR, bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, groupByForm, groupByGenus } from '@/utils/bleach'
+import type { BleachLevel, CoralForm, CoralRecord, CoralSource } from '@/types/coralRecord'
+import { BLEACH_BG, BLEACH_COLOR, bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, coralsInCoverage, groupByForm, groupByGenus, naturalCoralsOnly } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
 
 const route = useRoute()
@@ -31,6 +36,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const nurseryStore = useNurseryStore()
 
 const beltId = computed(() => String(route.params.id ?? ''))
 const belt = computed(() => beltStore.beltById(beltId.value))
@@ -49,43 +55,101 @@ const form = reactive({
   form: '枝状' as CoralForm,
   coverCm: 100,
   bleachLevel: '无' as BleachLevel,
-  remark: ''
+  remark: '',
+  source: 'natural' as CoralSource,
+  nurseryId: '',
+  batchNo: ''
 })
 
 const records = computed(() => surveyStore.coralsOfBelt(beltId.value))
 
-/** 按属名分组汇总 */
+/** 可选苗圃（录入回播记录时挂批号） */
+const nurseryOptions = computed(() =>
+  nurseryStore.nurseries.map((nursery) => ({
+    value: nursery.id,
+    label: `${nursery.no} ${nursery.name}`
+  }))
+)
+
+/** 当前选中苗圃的可选批号 */
+const batchOptions = computed(() => {
+  const nursery = nurseryStore.nurseryById(form.nurseryId)
+  return (nursery?.batches ?? []).map((batch) => ({
+    value: batch.batchNo,
+    label: `${batch.batchNo}（可供 ${batch.availableCm} cm）`,
+    availableCm: batch.availableCm
+  }))
+})
+
+/** 进覆盖率的记录：自然珊瑚 + 批号在苗圃台账中存在的移栽珊瑚 */
+const coverageRecords = computed(() =>
+  coralsInCoverage(
+    records.value,
+    (nurseryId) => nurseryStore.nurseryById(nurseryId) ?? undefined
+  )
+)
+/** 白化评定只按自然珊瑚 */
+const naturalRecords = computed(() => naturalCoralsOnly(records.value))
+/** 未挂上批号的移栽记录（挂起、不进覆盖率） */
+const unmatchedRecords = computed(() =>
+  records.value.filter((coral) => coral.source === 'nursery' && !isOutplant(coral))
+)
+
+function nurseryNoOf(record: CoralRecord): string {
+  return nurseryStore.nurseryById(record.nurseryId)?.no ?? record.nurseryId
+}
+
+/** 某条移栽记录的挂起原因（对应苗圃台账） */
+function pendingReason(record: CoralRecord): string {
+  if (!isOutplant(record)) {
+    if (!record.nurseryId) return '未挂苗圃，等苗圃组核定'
+    const nursery = nurseryStore.nurseryById(record.nurseryId)
+    if (!nursery) return '苗圃不存在，等苗圃组核定'
+    if (!record.batchNo) return '未带批号，等苗圃组核定'
+    if (!nursery.batches.some((batch) => batch.batchNo === record.batchNo)) {
+      return `批号 ${record.batchNo} 在苗圃 ${nursery.no} 不存在`
+    }
+  }
+  return ''
+}
+
+/** 按属名分组汇总（覆盖率口径） */
 const genusGroups = computed(() =>
-  groupByGenus(records.value).map((group) => {
-    const list = records.value.filter((record) => record.genus === group.genus)
-    const index = bleachIndex(list)
+  groupByGenus(coverageRecords.value).map((group) => {
+    const list = coverageRecords.value.filter((record) => record.genus === group.genus)
+    const index = bleachIndex(naturalCoralsOnly(list))
     return { ...group, count: list.length, bleachIndex: index, grade: bleachGrade(index) }
   })
 )
 
-/** 按形态分组汇总 */
-const formGroups = computed(() => groupByForm(records.value))
+/** 按形态分组汇总（覆盖率口径） */
+const formGroups = computed(() => groupByForm(coverageRecords.value))
 
 const stats = computed(() => {
-  const list = records.value
+  const list = coverageRecords.value
+  const naturalList = naturalRecords.value
   const coverCmTotal = list.reduce((sum, record) => sum + record.coverCm, 0)
-  const index = bleachIndex(list)
+  const outplantCm = list
+    .filter((record) => record.source === 'nursery')
+    .reduce((sum, record) => sum + record.coverCm, 0)
+  const index = bleachIndex(naturalList)
   return {
-    coralCount: list.length,
+    coralCount: records.value.length,
     coverCmTotal,
+    outplantCm,
     coveragePct: belt.value ? coralCoveragePct(coverCmTotal, belt.value.lengthM) : 0,
     bleachIndex: index,
     grade: bleachGrade(index),
-    bleachedSharePct: bleachedSharePct(list),
+    bleachedSharePct: bleachedSharePct(naturalList),
     maxCoverCm: list.length ? Math.max(...list.map((record) => record.coverCm)) : 0
   }
 })
 
-/** 白化等级 → 累计覆盖长度 */
+/** 白化等级 → 累计覆盖长度（只按自然珊瑚） */
 const distribution = computed<Record<BleachLevel, number>>(() => {
   const result: Record<BleachLevel, number> = { 无: 0, 轻: 0, 中: 0, 重: 0, 死亡: 0 }
   BLEACH_LEVELS.forEach((level) => {
-    result[level] = records.value
+    result[level] = naturalRecords.value
       .filter((record) => record.bleachLevel === level)
       .reduce((sum, record) => sum + record.coverCm, 0)
   })
@@ -105,6 +169,9 @@ function openCreate(): void {
   form.coverCm = 100
   form.bleachLevel = '无'
   form.remark = ''
+  form.source = 'natural'
+  form.nurseryId = nurseryStore.nurseries[0]?.id ?? ''
+  form.batchNo = ''
   dialogVisible.value = true
 }
 
@@ -115,6 +182,9 @@ function openEdit(record: CoralRecord): void {
   form.coverCm = record.coverCm
   form.bleachLevel = record.bleachLevel
   form.remark = record.remark
+  form.source = record.source
+  form.nurseryId = record.nurseryId
+  form.batchNo = record.batchNo
   dialogVisible.value = true
 }
 
@@ -131,6 +201,18 @@ async function submitForm(): Promise<void> {
     ElMessage.warning(`覆盖长度不应超过样带长度（${belt.value.lengthM * 100} cm）`)
     return
   }
+  // 回播记录必须挂上苗圃编号与批号才进礁区覆盖率；挂不上也允许保存，先挂起等苗圃组核定
+  if (form.source === 'nursery' && (!form.nurseryId || !form.batchNo.trim())) {
+    try {
+      await ElMessageBox.confirm(
+        '回播珊瑚未挂齐「苗圃 + 批号」，该记录将先挂起（不计入覆盖率、不扣减可供移出量），等苗圃组核定。仍要保存？',
+        '回播批号不完整',
+        { type: 'warning', confirmButtonText: '先挂起保存', cancelButtonText: '返回补全' }
+      )
+    } catch {
+      return
+    }
+  }
   submitting.value = true
   try {
     const payload = {
@@ -138,14 +220,23 @@ async function submitForm(): Promise<void> {
       form: form.form,
       coverCm: form.coverCm,
       bleachLevel: form.bleachLevel,
-      remark: form.remark.trim()
+      remark: form.remark.trim(),
+      source: form.source,
+      nurseryId: form.source === 'nursery' ? form.nurseryId : '',
+      batchNo: form.source === 'nursery' ? form.batchNo.trim() : ''
     }
     if (editingId.value) {
       await surveyStore.updateCoral(editingId.value, payload)
       ElMessage.success('珊瑚记录已更新')
     } else {
       await surveyStore.createCoral(beltId.value, payload)
-      ElMessage.success('珊瑚记录已新增，覆盖率与白化占比已重算')
+      if (payload.source === 'nursery' && payload.nurseryId && payload.batchNo) {
+        ElMessage.success('回播记录已录入：带批号进礁区覆盖率，苗圃组按覆盖长度扣减可供移出量')
+      } else if (payload.source === 'nursery') {
+        ElMessage.warning('回播记录已挂起，等苗圃组核定')
+      } else {
+        ElMessage.success('珊瑚记录已新增，覆盖率与白化占比已重算')
+      }
     }
     dialogVisible.value = false
   } finally {
@@ -230,6 +321,7 @@ function gotoFishes(): void {
 
 onMounted(() => {
   if (reefStore.reefs.length === 0) void initDatabase()
+  nurseryStore.start()
   if (belt.value) beltStore.selectBelt(belt.value.id)
 })
 </script>
@@ -271,7 +363,7 @@ onMounted(() => {
             <el-tag size="small" type="info" effect="plain">{{ belt.surveyDate }}</el-tag>
           </h2>
           <p class="gb-hint">
-            按属名与形态逐条录入覆盖长度与白化等级；覆盖率 = 覆盖长度合计 / 样带长度，白化指数按覆盖长度加权。
+            自然珊瑚按属名与形态逐条录入；带「苗圃编号 + 批号」的回播珊瑚计入覆盖率，但白化指数仍只按自然珊瑚算。未挂齐批号的回播先挂起，等苗圃组核定。
           </p>
         </div>
         <div class="page__actions">
@@ -284,16 +376,25 @@ onMounted(() => {
       <div class="gb-stats-row">
         <StatBadge label="珊瑚记录" :value="stats.coralCount" suffix="条" icon="Histogram" />
         <StatBadge label="覆盖长度合计" :value="stats.coverCmTotal" suffix="cm" tone="info" icon="Odometer" />
+        <StatBadge label="其中回播" :value="stats.outplantCm" suffix="cm" tone="primary" icon="Position" />
         <StatBadge label="珊瑚覆盖率" :value="stats.coveragePct" suffix="%" :percent="Math.min(100, stats.coveragePct)" tone="success" icon="PieChart" />
         <StatBadge
-          label="白化指数"
+          label="白化指数（自然）"
           :value="stats.bleachIndex"
           suffix="/ 4"
           :tone="stats.bleachIndex > 1 ? 'warning' : 'success'"
           :icon="stats.bleachIndex > 1 ? 'WarningFilled' : 'DataLine'"
         />
-        <StatBadge label="白化占比" :value="stats.bleachedSharePct" suffix="%" tone="warning" icon="TrendCharts" />
+        <StatBadge label="白化占比（自然）" :value="stats.bleachedSharePct" suffix="%" tone="warning" icon="TrendCharts" />
       </div>
+
+      <el-alert
+        v-if="unmatchedRecords.length > 0"
+        type="warning"
+        show-icon
+        :closable="false"
+        :title="`有 ${unmatchedRecords.length} 条回播记录未挂齐苗圃 / 批号，已挂起（不计入覆盖率），请到苗圃台账页由苗圃组核定。`"
+      />
 
       <el-card v-if="records.length > 0" shadow="never" class="gb-panel">
         <div class="gb-panel-title">
@@ -373,9 +474,23 @@ onMounted(() => {
             <el-checkbox :model-value="selectedIds.includes(row.id)" @change="() => toggleSelect(row.id)" />
           </template>
         </el-table-column>
-        <el-table-column prop="genus" label="属名" min-width="140" />
-        <el-table-column prop="form" label="形态" width="100" />
-        <el-table-column label="覆盖长度 (cm)" width="140" align="right">
+        <el-table-column prop="genus" label="属名" min-width="130" />
+        <el-table-column prop="form" label="形态" width="90" />
+        <el-table-column label="来源 / 批号" width="150">
+          <template #default="{ row }">
+            <SourceTag
+              :source="row.source"
+              :batch-no="row.batchNo"
+              :nursery-no="nurseryNoOf(row)"
+              :pending="row.source === 'nursery' && !isOutplant(row)"
+              size="small"
+            />
+            <div v-if="row.source === 'nursery' && !isOutplant(row)" class="gb-hint gb-danger">
+              {{ pendingReason(row) }}
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="覆盖长度 (cm)" width="130" align="right">
           <template #default="{ row }">
             <span class="gb-mono">{{ row.coverCm }}</span>
             <div class="gb-hint gb-mono">
@@ -386,6 +501,7 @@ onMounted(() => {
         <el-table-column label="白化等级" width="150">
           <template #default="{ row }">
             <BleachTag :level="row.bleachLevel" size="small" :plain="true" />
+            <div v-if="row.source === 'nursery'" class="gb-hint">回播不参与白化指数</div>
           </template>
         </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
@@ -408,8 +524,15 @@ onMounted(() => {
       </p>
     </template>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑珊瑚记录' : '新增珊瑚记录'" width="540px" :close-on-click-modal="false">
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑珊瑚记录' : '新增珊瑚记录'" width="560px" :close-on-click-modal="false">
       <el-form label-width="110px">
+        <el-form-item label="来源" required>
+          <el-radio-group v-model="form.source">
+            <el-radio-button v-for="src in CORAL_SOURCES" :key="src" :value="src">
+              {{ CORAL_SOURCE_LABEL[src] }}
+            </el-radio-button>
+          </el-radio-group>
+        </el-form-item>
         <el-form-item label="属名" required>
           <el-input v-model="form.genus" list="genus-options" placeholder="如：鹿角珊瑚属" maxlength="30" />
           <datalist id="genus-options">
@@ -421,6 +544,33 @@ onMounted(() => {
             <el-radio-button v-for="item in CORAL_FORMS" :key="item" :value="item">{{ item }}</el-radio-button>
           </el-radio-group>
         </el-form-item>
+        <template v-if="form.source === 'nursery'">
+          <el-form-item label="苗圃编号" required>
+            <el-select v-model="form.nurseryId" placeholder="选择来源苗圃" filterable style="width: 100%">
+              <el-option v-for="option in nurseryOptions" :key="option.value" :label="option.label" :value="option.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="培育批次号" required>
+            <el-select
+              v-model="form.batchNo"
+              placeholder="选择培育批次（带批号才进覆盖率）"
+              filterable
+              allow-create
+              default-first-option
+              style="width: 100%"
+            >
+              <el-option
+                v-for="option in batchOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+            <div v-if="form.nurseryId && batchOptions.length === 0" class="gb-hint gb-danger">
+              该苗圃暂无批次，保存后将先挂起等苗圃组核定。
+            </div>
+          </el-form-item>
+        </template>
         <el-form-item label="覆盖长度" required>
           <el-input-number v-model="form.coverCm" :min="0" :max="belt ? belt.lengthM * 100 : 10000" :step="10" controls-position="right" />
           <span class="page__unit">cm（样带全长 {{ belt ? belt.lengthM * 100 : 0 }} cm）</span>
@@ -431,6 +581,9 @@ onMounted(() => {
               {{ level }}
             </el-radio-button>
           </el-radio-group>
+          <div v-if="form.source === 'nursery'" class="gb-hint">
+            白化等级照录存档，但回播珊瑚不参与样带白化指数 / 白化占比计算。
+          </div>
           <div class="page__legend">
             <span
               v-for="level in BLEACH_LEVELS"
@@ -456,7 +609,7 @@ onMounted(() => {
 
     <el-dialog v-model="pasteVisible" title="批量粘贴导入珊瑚记录" width="620px">
       <p class="gb-hint">
-        每行一条，格式「属名,形态,覆盖长度(cm)[,白化等级]」，逗号 / 制表符 / 分号均可。示例：<br />
+        每行一条，格式「属名,形态,覆盖长度(cm)[,白化等级]」，逗号 / 制表符 / 分号均可。批量粘贴的外业摸底数据一律按<strong>自然珊瑚</strong>录入，仅覆盖该样带现有自然珊瑚，不影响已录入的回播记录。示例：<br />
         <span class="gb-mono">鹿角珊瑚属,枝状,860,无</span><br />
         <span class="gb-mono">蔷薇珊瑚属;叶状;720;中</span><br />
         <span class="gb-mono">滨珊瑚属,块状,1120</span>

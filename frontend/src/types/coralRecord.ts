@@ -1,4 +1,9 @@
 /** 珊瑚形态 */
+import type { CoralSource } from '@/types/nursery'
+
+export type { CoralSource }
+export { CORAL_SOURCES, CORAL_SOURCE_LABEL } from '@/types/nursery'
+
 export type CoralForm = '枝状' | '块状' | '叶状' | '软珊瑚'
 
 export const CORAL_FORMS: CoralForm[] = ['枝状', '块状', '叶状', '软珊瑚']
@@ -23,8 +28,31 @@ export interface CoralRecord {
   bleachLevel: BleachLevel
   /** 备注（病敌害、断枝等） */
   remark: string
+  /**
+   * 来源：natural 自然珊瑚（外业普查）/ nursery 苗圃回播。
+   * 旧数据未记来源，v3 升级时统一回填为 natural。
+   */
+  source: CoralSource
+  /** 来源苗圃 id（仅 nursery 记录，回播带批号进礁区覆盖率的对账键之一） */
+  nurseryId: string
+  /** 培育批次号（仅 nursery 记录；批号对得上才计入礁区覆盖率） */
+  batchNo: string
   createdAt: number
   updatedAt: number
+}
+
+/**
+ * 移栽珊瑚是否带有效批号（据此决定能否进礁区覆盖率）：
+ * 必须来源为 nursery、同时挂上苗圃与批号。
+ * 入参字段允许缺省，便于在升级前的旧数据上调用。
+ */
+export function isOutplant(record: { source?: CoralSource; nurseryId?: string; batchNo?: string }): boolean {
+  return record.source === 'nursery' && (record.nurseryId ?? '').trim().length > 0 && (record.batchNo ?? '').trim().length > 0
+}
+
+/** 自然珊瑚判定：白化指数 / 白化占比只统计自然珊瑚（来源缺省的旧数据按自然珊瑚处理） */
+export function isNaturalCoral(record: { source?: CoralSource }): boolean {
+  return record.source !== 'nursery'
 }
 
 /** 珊瑚记录草稿（存于 surveyStore） */
@@ -34,6 +62,9 @@ export interface CoralDraft {
   coverCm: number
   bleachLevel: BleachLevel
   remark: string
+  source: CoralSource
+  nurseryId: string
+  batchNo: string
 }
 
 export function createEmptyCoralDraft(): CoralDraft {
@@ -42,7 +73,10 @@ export function createEmptyCoralDraft(): CoralDraft {
     form: '枝状',
     coverCm: 100,
     bleachLevel: '无',
-    remark: ''
+    remark: '',
+    source: 'natural',
+    nurseryId: '',
+    batchNo: ''
   }
 }
 

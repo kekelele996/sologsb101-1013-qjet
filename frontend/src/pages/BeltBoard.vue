@@ -15,9 +15,10 @@ import RouteMissingPanel from '@/components/common/RouteMissingPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { ORIENTATION_ORDER, useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useNurseryStore } from '@/stores/nurseryStore'
 import { BELT_LENGTH_PRESETS, ORIENTATIONS } from '@/types/belt'
 import type { Belt, Orientation } from '@/types/belt'
-import { bleachGrade, bleachIndex, coralCoveragePct, fishDensity } from '@/utils/bleach'
+import { bleachGrade, bleachIndex, coralCoveragePct, coralsInCoverage, fishDensity, naturalCoralsOnly } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
 
 const route = useRoute()
@@ -25,6 +26,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const nurseryStore = useNurseryStore()
 
 const siteId = computed(() => String(route.params.id ?? ''))
 const site = computed(() => reefStore.siteById(siteId.value))
@@ -44,10 +46,13 @@ const form = reactive({
 /** 样带行：回显珊瑚记录数、鱼类记录数、覆盖率与白化指数 */
 const rows = computed(() =>
   beltStore.beltsOfSite(siteId.value).map((belt) => {
-    const corals = surveyStore.coralsOfBelt(belt.id)
+    const allCorals = surveyStore.coralsOfBelt(belt.id)
+    const lookup = (nurseryId: string) => nurseryStore.nurseryById(nurseryId) ?? undefined
+    const corals = coralsInCoverage(allCorals, lookup)
+    const naturalCorals = naturalCoralsOnly(allCorals)
     const fishes = surveyStore.fishesOfBelt(belt.id)
     const coverCmTotal = corals.reduce((sum, coral) => sum + coral.coverCm, 0)
-    const index = bleachIndex(corals)
+    const index = bleachIndex(naturalCorals)
     const fishTotal = fishes.filter((fish) => fish.category === '鱼类').reduce((sum, fish) => sum + fish.count, 0)
     return {
       belt,
@@ -192,6 +197,7 @@ function gotoFishes(belt: Belt): void {
 
 onMounted(() => {
   if (reefStore.reefs.length === 0) void initDatabase()
+  nurseryStore.start()
   if (site.value) reefStore.selectSite(site.value.id)
 })
 </script>

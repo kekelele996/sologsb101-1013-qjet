@@ -46,7 +46,15 @@ const router = useRouter()
 const reefStore = useReefStore()
 const surveyStore = useSurveyStore()
 
-const EMPTY_COUNTS: CountMap = { reefs: 0, sites: 0, belts: 0, corals: 0, fishes: 0 }
+const EMPTY_COUNTS: CountMap = {
+  reefs: 0,
+  sites: 0,
+  belts: 0,
+  corals: 0,
+  fishes: 0,
+  nurseries: 0,
+  outplants: 0
+}
 
 const counts = ref<CountMap>(EMPTY_COUNTS)
 const lastBackupAt = ref<string | null>(null)
@@ -69,6 +77,7 @@ const totals = computed(() => ({
   belts: rows.value.length,
   coralCount: rows.value.reduce((sum, row) => sum + row.coralCount, 0),
   coverCmTotal: rows.value.reduce((sum, row) => sum + row.coverCmTotal, 0),
+  outplantCm: rows.value.reduce((sum, row) => sum + row.outplantCm, 0),
   fishTotal: rows.value.reduce((sum, row) => sum + row.fishTotal, 0),
   avgCoveragePct:
     rows.value.length === 0
@@ -117,6 +126,7 @@ async function refresh(): Promise<void> {
     observer: row.observer,
     coralCount: row.coralCount,
     coverCmTotal: row.coverCmTotal,
+    outplantCm: row.outplantCm,
     coveragePct: row.coveragePct,
     bleachIndex: row.bleachIndex,
     grade: row.grade,
@@ -217,7 +227,7 @@ async function copySummary(): Promise<void> {
   const text = rows.value
     .map(
       (row) =>
-        `${row.reefName}｜站位 ${row.siteNo}｜样带 ${row.beltNo}（${row.orientation}向 ${row.lengthM} m）：珊瑚覆盖率 ${row.coveragePct}%，白化指数 ${row.bleachIndex}（${row.grade}），白化占比 ${row.bleachedSharePct}%，鱼类 ${row.fishTotal} 尾（${row.fishDensity} 尾/100m²）`
+        `${row.reefName}｜站位 ${row.siteNo}｜样带 ${row.beltNo}（${row.orientation}向 ${row.lengthM} m）：珊瑚覆盖率 ${row.coveragePct}%${row.outplantCm > 0 ? `（含苗圃回播 ${row.outplantCm} cm）` : ''}，白化指数 ${row.bleachIndex}（${row.grade}，仅自然珊瑚），白化占比 ${row.bleachedSharePct}%，鱼类 ${row.fishTotal} 尾（${row.fishDensity} 尾/100m²）`
     )
     .join('\n')
   try {
@@ -249,7 +259,7 @@ onMounted(() => {
       <div>
         <h2 class="page__title">白化等级评定与覆盖度汇总</h2>
         <p class="gb-hint">
-          按样带汇总珊瑚覆盖率、白化指数（按覆盖长度加权，0 ~ 4）与鱼类密度，并可按礁区、白化等级筛选；同时提供结构版本查看与 JSON 导入导出。
+          按样带汇总珊瑚覆盖率（含带批号的苗圃回播）、白化指数（只按自然珊瑚，0 ~ 4）与鱼类密度，并可按礁区、白化等级筛选；同时提供结构版本查看与 JSON 导入导出。
         </p>
       </div>
       <div class="page__actions">
@@ -265,9 +275,10 @@ onMounted(() => {
       <StatBadge label="样带数" :value="totals.belts" suffix="条" icon="Files" />
       <StatBadge label="珊瑚记录" :value="totals.coralCount" suffix="条" tone="info" icon="Histogram" />
       <StatBadge label="覆盖长度合计" :value="totals.coverCmTotal" suffix="cm" tone="success" icon="Odometer" />
+      <StatBadge label="其中苗圃回播" :value="totals.outplantCm" suffix="cm" tone="primary" icon="Position" />
       <StatBadge label="平均覆盖率" :value="totals.avgCoveragePct" suffix="%" :percent="Math.min(100, totals.avgCoveragePct)" icon="PieChart" />
       <StatBadge
-        label="平均白化指数"
+        label="平均白化指数（自然）"
         :value="totals.avgBleachIndex"
         suffix="/ 4"
         :tone="totals.avgBleachIndex > 1 ? 'warning' : 'success'"
@@ -302,8 +313,9 @@ onMounted(() => {
       <div class="gb-panel-title">
         <h3>白化等级分布（覆盖长度 cm）</h3>
         <span class="gb-hint">
-          总体白化指数 {{ surveyStore.globalStats.bleachIndex }}（{{ surveyStore.globalStats.grade }}）· 白化占比
-          {{ surveyStore.globalStats.bleachedSharePct }}% · 存在白化样带 {{ totals.bleachedBelts }} 条
+          总体白化指数 {{ surveyStore.globalStats.bleachIndex }}（{{ surveyStore.globalStats.grade }}，仅自然珊瑚）· 白化占比
+          {{ surveyStore.globalStats.bleachedSharePct }}% · 存在白化样带 {{ totals.bleachedBelts }} 条 · 回播计入覆盖
+          {{ surveyStore.globalStats.outplantCm }} cm
         </span>
       </div>
       <div class="gb-bars">
@@ -350,13 +362,14 @@ onMounted(() => {
             <span class="gb-mono">{{ row.coralCount }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="覆盖率" width="130" align="right">
+        <el-table-column label="覆盖率（含回播）" width="140" align="right">
           <template #default="{ row }">
             <span class="gb-mono">{{ row.coveragePct }}%</span>
             <div class="gb-hint gb-mono">{{ row.coverCmTotal }} cm</div>
+            <div v-if="row.outplantCm > 0" class="gb-hint gb-mono">回播 {{ row.outplantCm }} cm</div>
           </template>
         </el-table-column>
-        <el-table-column label="白化评定" width="170">
+        <el-table-column label="白化评定（自然）" width="180">
           <template #default="{ row }">
             <BleachTag :level="row.grade" size="small" />
             <div class="gb-hint gb-mono">指数 {{ row.bleachIndex }} · 白化占比 {{ row.bleachedSharePct }}%</div>
@@ -440,7 +453,7 @@ onMounted(() => {
       <div class="gb-panel-title">
         <h3>结构版本与全量 JSON 导入导出</h3>
         <span class="gb-hint">
-          导出内容包含 reefs / sites / belts / corals / fishes 五张表 · 最近备份
+          导出内容包含 reefs / sites / belts / corals / fishes / nurseries / outplants 七张表 · 最近备份
           {{ lastBackupAt ? new Date(lastBackupAt).toLocaleString('zh-CN') : '尚未备份' }}
         </span>
       </div>
@@ -479,6 +492,7 @@ onMounted(() => {
         <el-descriptions-item label="礁区 / 站位">{{ counts.reefs }} / {{ counts.sites }}</el-descriptions-item>
         <el-descriptions-item label="样带 / 珊瑚记录">{{ counts.belts }} / {{ counts.corals }}</el-descriptions-item>
         <el-descriptions-item label="鱼类计数">{{ counts.fishes }}</el-descriptions-item>
+        <el-descriptions-item label="苗圃 / 对账台账">{{ counts.nurseries }} / {{ counts.outplants }}</el-descriptions-item>
         <el-descriptions-item label="最近备份时间">
           {{ lastBackupAt ? new Date(lastBackupAt).toLocaleString('zh-CN') : '尚未备份' }}
         </el-descriptions-item>

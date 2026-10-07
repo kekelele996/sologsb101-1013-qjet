@@ -17,9 +17,10 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useNurseryStore } from '@/stores/nurseryStore'
 import { AREA_BUCKETS, createEmptyReefFilter, PROTECT_STATUSES } from '@/types/reef'
 import type { ProtectStatus, Reef } from '@/types/reef'
-import { bleachGrade, bleachIndex } from '@/utils/bleach'
+import { bleachGrade, bleachIndex, coralsInCoverage, naturalCoralsOnly } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
 
 const route = useRoute()
@@ -27,6 +28,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const nurseryStore = useNurseryStore()
 
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
@@ -49,12 +51,14 @@ const cards = computed(() =>
     const beltIds = new Set(belts.map((belt) => belt.id))
     const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
     const fishes = surveyStore.fishes.filter((fish) => beltIds.has(fish.beltId))
-    const index = bleachIndex(corals)
+    // 白化指数只按自然珊瑚；覆盖率口径的记录另含批号对得上苗圃的移栽珊瑚
+    const lookup = (nurseryId: string) => nurseryStore.nurseryById(nurseryId) ?? undefined
+    const index = bleachIndex(naturalCoralsOnly(corals))
     return {
       reef,
       siteCount: sites.length,
       beltCount: belts.length,
-      coralCount: corals.length,
+      coralCount: coralsInCoverage(corals, lookup).length,
       fishTotal: fishes.reduce((sum, fish) => sum + fish.count, 0),
       bleachIndex: index,
       grade: bleachGrade(index)
@@ -191,6 +195,7 @@ async function reseed(): Promise<void> {
 
 onMounted(() => {
   applyQuery()
+  nurseryStore.start()
   if (reefStore.reefs.length === 0) void reseed()
 })
 

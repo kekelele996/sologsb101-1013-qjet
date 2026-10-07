@@ -18,9 +18,10 @@ import RouteMissingPanel from '@/components/common/RouteMissingPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useNurseryStore } from '@/stores/nurseryStore'
 import { formatLatLng, SUBSTRATES, validateLatLng } from '@/types/site'
 import type { Site } from '@/types/site'
-import { bleachGrade, bleachIndex } from '@/utils/bleach'
+import { bleachGrade, bleachIndex, coralsInCoverage, naturalCoralsOnly } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
 
 const route = useRoute()
@@ -28,6 +29,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const nurseryStore = useNurseryStore()
 
 const reefId = computed(() => String(route.params.id ?? ''))
 const reef = computed(() => reefStore.reefById(reefId.value))
@@ -56,12 +58,13 @@ const rows = computed(() => {
     const belts = beltStore.beltsOfSite(site.id)
     const beltIds = new Set(belts.map((belt) => belt.id))
     const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
-    const index = bleachIndex(corals)
+    const lookup = (nurseryId: string) => nurseryStore.nurseryById(nurseryId) ?? undefined
+    const index = bleachIndex(naturalCoralsOnly(corals))
     return {
       site,
       beltCount: belts.length,
       beltLengthM: belts.reduce((sum, belt) => sum + belt.lengthM, 0),
-      coralCount: corals.length,
+      coralCount: coralsInCoverage(corals, lookup).length,
       bleachIndex: index,
       grade: bleachGrade(index)
     }
@@ -189,6 +192,7 @@ function handleReset(): void {
 
 onMounted(() => {
   if (reefStore.reefs.length === 0) void initDatabase()
+  nurseryStore.start()
   const query = route.query
   reefStore.patchSiteFilter({
     keyword: typeof query.kw === 'string' ? query.kw : '',

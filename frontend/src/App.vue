@@ -5,10 +5,11 @@
  */
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DataLine, Files, Grid, Odometer, PieChart } from '@element-plus/icons-vue'
+import { Box, DataLine, Files, Grid, Odometer, PieChart } from '@element-plus/icons-vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useNurseryStore } from '@/stores/nurseryStore'
 import { DB_NAME, DB_VERSION } from '@/utils/db'
 
 const route = useRoute()
@@ -16,11 +17,13 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const nurseryStore = useNurseryStore()
 
 onMounted(() => {
   reefStore.start()
   beltStore.start()
   surveyStore.start()
+  nurseryStore.start()
 })
 
 /** 层级路由统一归属到最上层导航项 */
@@ -33,6 +36,7 @@ const activeKey = computed(() => {
 
 const navItems = computed(() => [
   { key: '/reefs', label: '礁区台账', icon: Odometer, badge: String(reefStore.reefs.length) },
+  { key: '/nurseries', label: '苗圃台账', icon: Box, badge: nurseryStore.pendingCount > 0 ? String(nurseryStore.pendingCount) : '' },
   { key: '/coverage', label: '覆盖度汇总', icon: PieChart, badge: String(surveyStore.corals.length) }
 ])
 
@@ -78,7 +82,7 @@ function go(path: string): void {
           v-for="item in navItems"
           :key="item.key"
           class="app-nav__item"
-          :class="{ 'is-active': activeKey === item.key }"
+          :class="{ 'is-active': activeKey === item.key, 'is-alert': item.key === '/nurseries' && nurseryStore.pendingCount > 0 }"
           type="button"
           @click="go(item.key)"
         >
@@ -108,7 +112,8 @@ function go(path: string): void {
       </span>
       <span>
         礁区 {{ reefStore.reefs.length }} · 站位 {{ reefStore.sites.length }} · 样带 {{ beltStore.belts.length }} · 珊瑚记录
-        {{ surveyStore.corals.length }} · 计数记录 {{ surveyStore.fishes.length }}
+        {{ surveyStore.corals.length }} · 计数记录 {{ surveyStore.fishes.length }} · 苗圃 {{ nurseryStore.nurseries.length }} · 对账待办
+        {{ nurseryStore.pendingCount }}
       </span>
     </footer>
   </div>
@@ -191,6 +196,15 @@ function go(path: string): void {
   background: #eafaf7;
   color: #0b5d5a;
   font-weight: 600;
+}
+
+.app-nav__item.is-alert {
+  border-color: #f0c36d;
+}
+
+.app-nav__item.is-alert .app-nav__badge {
+  background: #d68910;
+  color: #fff;
 }
 
 .app-nav__badge {

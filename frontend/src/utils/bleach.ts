@@ -1,8 +1,54 @@
 /**
  * 白化工具：白化等级排序权重、白化指数换算与配色映射。
  * 页面、store 与数据库播种共用同一套算法。
+ *
+ * 回播口径（苗圃回播业务）：
+ * - 覆盖率：自然珊瑚 + 带批号的移栽珊瑚都计入礁区覆盖率；
+ * - 白化指数 / 白化占比 / 白化分布：仍只按自然珊瑚算，移栽珊瑚不参与。
  */
 import type { BleachLevel, CoralForm } from '@/types/coralRecord'
+import { isNaturalCoral, isOutplant } from '@/types/coralRecord'
+
+/** 可用于覆盖率 / 白化口径筛选的珊瑚记录形状 */
+type SourcableCoral = {
+  source?: 'natural' | 'nursery'
+  nurseryId?: string
+  batchNo?: string
+}
+
+/**
+ * 进礁区覆盖率的珊瑚：自然珊瑚 + 带批号且批号在苗圃中真实存在的移栽珊瑚。
+ * 仅「填了批号」但对不上苗圃台账的移栽记录不进覆盖率，先挂起等苗圃组核定。
+ * 不传 nurseryLookup 时退化为只校验字段（外业页本地无苗圃全集的兜底）。
+ */
+export function coralsInCoverage<T extends SourcableCoral>(
+  records: T[],
+  nurseryLookup?: (nurseryId: string) => { batches: Array<{ batchNo: string }> } | undefined
+): T[] {
+  return records.filter((record) => {
+    if (isNaturalCoral(record)) return true
+    if (!isOutplant(record)) return false
+    if (!nurseryLookup) return true
+    const nurseryId = record.nurseryId ?? ''
+    const nursery = nurseryLookup(nurseryId)
+    return !!nursery?.batches.some((batch) => batch.batchNo === (record.batchNo ?? ''))
+  })
+}
+
+/** 参与白化评定的珊瑚：白化指数仍按自然珊瑚算，移栽珊瑚一律不参与 */
+export function naturalCoralsOnly<T extends SourcableCoral>(records: T[]): T[] {
+  return records.filter((record) => isNaturalCoral(record))
+}
+
+/** 带批号的移栽珊瑚（仅用于回播覆盖率拆分展示） */
+export function outplantCorals<T extends SourcableCoral>(records: T[]): T[] {
+  return records.filter((record) => !isNaturalCoral(record) && isOutplant(record))
+}
+
+/** 未带批号 / 未挂苗圃的移栽珊瑚（挂起来源，不进覆盖率也不参与白化） */
+export function unmatchedOutplants<T extends SourcableCoral>(records: T[]): T[] {
+  return records.filter((record) => !isNaturalCoral(record) && !isOutplant(record))
+}
 
 /** 保留小数位 */
 export function round(value: number, digits = 2): number {

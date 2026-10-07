@@ -8,6 +8,7 @@ import { storeToRefs } from 'pinia'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useNurseryStore } from '@/stores/nurseryStore'
 import type { BleachLevel, CoralRecord, CoralForm } from '@/types/coralRecord'
 import { BLEACH_LEVELS } from '@/types/coralRecord'
 import type { FishCount } from '@/types/fishCount'
@@ -16,9 +17,11 @@ import {
   bleachIndex,
   bleachedSharePct,
   coralCoveragePct,
+  coralsInCoverage,
   fishDensity,
   groupByForm,
   groupByGenus,
+  naturalCoralsOnly,
   round
 } from '@/utils/bleach'
 
@@ -36,14 +39,16 @@ export interface BeltCoverage {
   observer: string
   coralCount: number
   coverCmTotal: number
-  /** 珊瑚覆盖率（%） */
+  /** 其中苗圃回播（带批号、进覆盖率）的覆盖长度 cm */
+  outplantCm: number
+  /** 珊瑚覆盖率（%）：自然珊瑚 + 带批号移栽珊瑚 */
   coveragePct: number
-  /** 白化指数 0 ~ 4 */
+  /** 白化指数 0 ~ 4（只按自然珊瑚） */
   bleachIndex: number
   grade: BleachLevel
-  /** 白化占比（%） */
+  /** 白化占比（%，只按自然珊瑚） */
   bleachedSharePct: number
-  /** 各白化等级累计覆盖长度 */
+  /** 各白化等级累计覆盖长度（只按自然珊瑚） */
   distribution: Record<BleachLevel, number>
   /** 按属名分组的覆盖长度 */
   byGenus: Array<{ genus: string; coverCm: number }>
@@ -117,10 +122,14 @@ export function useCoverage(): UseCoverageResult {
   const reefStore = useReefStore()
   const beltStore = useBeltStore()
   const surveyStore = useSurveyStore()
+  const nurseryStore = useNurseryStore()
 
   const { reefs, sites } = storeToRefs(reefStore)
   const { belts } = storeToRefs(beltStore)
   const { corals, fishes } = storeToRefs(surveyStore)
+
+  /** 回播批号是否真实存在（决定移栽珊瑚进不进覆盖率） */
+  const nurseryLookup = (nurseryId: string) => nurseryStore.nurseryById(nurseryId) ?? undefined
 
   const siteOf = (siteId: string) => sites.value.find((site) => site.id === siteId) ?? null
   const reefOf = (reefId: string) => reefs.value.find((reef) => reef.id === reefId) ?? null
@@ -130,17 +139,26 @@ export function useCoverage(): UseCoverageResult {
     if (!belt) return null
     const site = siteOf(belt.siteId)
     const reef = site ? reefOf(site.reefId) : null
-    const beltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
+    const allBeltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
+    // 覆盖率口径：自然 + 带批号移栽；白化口径：仅自然
+    const beltCorals = coralsInCoverage(allBeltCorals, nurseryLookup)
+    const naturalCorals = naturalCoralsOnly(allBeltCorals)
     const beltFishes = fishes.value.filter((fish) => fish.beltId === belt.id)
     const coverCmTotal = round(
       beltCorals.reduce((sum, coral) => sum + coral.coverCm, 0),
       1
     )
-    const index = bleachIndex(beltCorals)
+    const outplantCm = round(
+      beltCorals.filter((coral) => coral.source === 'nursery').reduce((sum, coral) => sum + coral.coverCm, 0),
+      1
+    )
+    const index = bleachIndex(naturalCorals)
     const distribution = EMPTY_DISTRIBUTION()
     BLEACH_LEVELS.forEach((level) => {
       distribution[level] = round(
-        beltCorals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+        naturalCorals
+          .filter((coral) => coral.bleachLevel === level)
+          .reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
     })
@@ -161,10 +179,11 @@ export function useCoverage(): UseCoverageResult {
       observer: belt.observer,
       coralCount: beltCorals.length,
       coverCmTotal,
+      outplantCm,
       coveragePct: coralCoveragePct(coverCmTotal, belt.lengthM),
       bleachIndex: index,
       grade: bleachGrade(index),
-      bleachedSharePct: bleachedSharePct(beltCorals),
+      bleachedSharePct: bleachedSharePct(naturalCorals),
       distribution,
       byGenus: groupByGenus(beltCorals),
       byForm: groupByForm(beltCorals),
@@ -191,7 +210,9 @@ export function useCoverage(): UseCoverageResult {
     const reef = reefOf(site.reefId)
     const siteBelts = belts.value.filter((belt) => belt.siteId === site.id)
     const beltIds = new Set(siteBelts.map((belt) => belt.id))
-    const siteCorals = corals.value.filter((coral) => beltIds.has(coral.beltId))
+    const allSiteCorals = corals.value.filter((coral) => beltIds.has(coral.beltId))
+    const siteCorals = coralsInCoverage(allSiteCorals, nurseryLookup)
+    const naturalCorals = naturalCoralsOnly(allSiteCorals)
     const siteFishes = fishes.value.filter((fish) => beltIds.has(fish.beltId))
     const coverCmTotal = round(
       siteCorals.reduce((sum, coral) => sum + coral.coverCm, 0),
@@ -204,7 +225,7 @@ export function useCoverage(): UseCoverageResult {
         belt.lengthM
       )
     })
-    const indices = siteBelts.map((belt) => bleachIndex(siteCorals.filter((coral) => coral.beltId === belt.id)))
+    const indices = siteBelts.map((belt) => bleachIndex(naturalCorals.filter((coral) => coral.beltId === belt.id)))
     const avgBleachIndex =
       indices.length === 0 ? 0 : round(indices.reduce((sum, value) => sum + value, 0) / indices.length, 2)
     const fishTotal = siteFishes.filter((fish) => fish.category === '鱼类').reduce((sum, fish) => sum + fish.count, 0)
@@ -222,7 +243,7 @@ export function useCoverage(): UseCoverageResult {
         coverages.length === 0 ? 0 : round(coverages.reduce((sum, value) => sum + value, 0) / coverages.length, 2),
       avgBleachIndex,
       grade: bleachGrade(avgBleachIndex),
-      bleachedSharePct: bleachedSharePct(siteCorals),
+      bleachedSharePct: bleachedSharePct(naturalCorals),
       fishTotal,
       invertebrateTotal: siteFishes
         .filter((fish) => fish.category === '无脊椎动物')
@@ -244,9 +265,10 @@ export function useCoverage(): UseCoverageResult {
 
   const globalDistribution = computed<Record<BleachLevel, number>>(() => {
     const distribution = EMPTY_DISTRIBUTION()
+    const naturalCorals = naturalCoralsOnly(corals.value)
     BLEACH_LEVELS.forEach((level) => {
       distribution[level] = round(
-        corals.value.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+        naturalCorals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
     })
